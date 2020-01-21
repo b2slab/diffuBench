@@ -28,6 +28,9 @@ packrat/bundles/*
 11_supplement
 
 # compiled pdf files
+01_synthetic/10_synth_yeast.pdf
+02_dlbcl/10_supplement.pdf
+03_retroData/10_supplement.pdf
 10_main/main.pdf
 11_supplement/supplement-math-properties.pdf
 all.zip
