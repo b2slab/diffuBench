@@ -1,0 +1,210 @@
+---
+title: "Descriptive stats on networks and reference network choice"
+author: "Sergio Picart-Armada"
+date: "November 2, 2017"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+```{r}
+# please see http://www.math.pitt.edu/~lewicka/Semester_DiscrNetw_14/MNlecture22.pdf
+# the file has been downloaded to 0a_network
+
+library(igraph)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+
+library(diffuStats)
+
+library(ggplot2)
+
+conf_01 <- new.env()
+source("01_synthetic/01_config.R", local = conf_01)
+
+conf_02 <- new.env()
+source("02_dlbcl/params.R", local = conf_02)
+
+conf_03 <- new.env()
+source("03_retroData/params.R", local = conf_03)
+
+load(paste0("02_dlbcl/", conf_02$file_graph))
+load(paste0("03_retroData/", conf_03$file_dataset))
+```
+
+```{r}
+# return a data frame describing a network 
+# (order, size, density and power law)
+describe_net <- function(g) {
+  # g <- barabasi.game(1000, power = 1, m = 3)
+  # g
+  deg <- igraph::degree(g, mode = "all")
+  plf <- igraph::fit_power_law(x = deg + 1, xmin = 10)
+  data.frame(
+    vc = igraph::vcount(g), 
+    ec = igraph::ecount(g), 
+    meandeg = mean(deg),
+    density = igraph::graph.density(g), 
+    alpha = plf$alpha
+  )
+}
+# degree distribution (cumulative), excludes degree = 0
+deg_dist <- function(g, max_deg = NULL) {
+  d <- degree.distribution(g, cumulative = TRUE)[-1]
+  ld <- length(d)
+  
+  if (is.null(max_deg)) max_deg <- ld
+  
+  data.frame(
+    degree = 1:max_deg, 
+    cumul = c(d, rep(0, max_deg - ld)), 
+    row.names = NULL
+  )
+}
+```
+
+
+# Preprocess pathway partitions
+
+```{r}
+set.seed(1)
+
+nrep <- 20
+
+grid_par <- expand.grid(
+  n = 1000, 
+  m = seq(from = 1, to = 20, by = 1), 
+  power = seq(from = .6, to = 2.4, by = .2), 
+  directed = FALSE, 
+  rep = 1:nrep)
+
+# nrep <- 20
+# This object can be BIG: 3.3Gb with nrep<-50
+list_barabasi <- plyr::alply(
+  grid_par, 
+  1, 
+  function(row) {
+    # browser()
+    form <- intersect(
+      names(formals(igraph::barabasi.game)), 
+      colnames(row)
+    )
+    do.call(igraph::barabasi.game, row[form])
+  }
+)
+
+df_barabasi <- plyr::ldply(
+  list_barabasi, describe_net
+) %>% group_by(m, power) %>% summarise(alpha_mean = mean(alpha))
+head(df_barabasi)
+```
+
+```{r}
+ggplot(df_barabasi, aes(x = m, y = power, fill = alpha_mean)) + 
+  geom_raster() + 
+  scale_fill_distiller(
+    palette = "Spectral", 
+    name = paste0("Mean exponent\n(", nrep, " repetitions)")) +
+  theme_bw() + 
+  ggtitle("Exponent from scale free law", 
+          subtitle = "Synthetic Barabasi model") +
+  theme(aspect.ratio = 1)
+ggsave(filename = "0a_network/power_law_exponent_grid.pdf", width = 7, height = 6)
+```
+
+```{r}
+ref_params <- list(n = 1000, m = 5, power = 1, directed = FALSE)
+write.table(t(as.data.frame(ref_params)), 
+            quote = FALSE, 
+            file = "0a_network/chosen_parameters.tsv", 
+            row.names = TRUE, 
+            col.names = FALSE)
+
+n_nets <- 100
+
+list_synth <-  plyr::llply(
+  setNames(1:n_nets, paste0("Net", 1:n_nets)), 
+  function(dummy) {
+    do.call(igraph::barabasi.game, ref_params)
+  }
+)
+df_deg <- plyr::ldply(
+  list(BioGRID = g.network, HPRD = g_cc), 
+  deg_dist, 
+  .id = "net"
+) 
+df_deg_synth <- plyr::ldply(
+  list_synth, 
+  function(x) deg_dist(x, max_deg = 1000), 
+  .id = "net"
+) %>% 
+  group_by(degree) %>% 
+  transmute(lower = quantile(cumul, .05),
+            mid = quantile(cumul, .5),
+            upper = quantile(cumul, .95)) %>% 
+  filter(upper > 0)
+df_deg_synth[df_deg_synth == 0] <- NA
+```
+
+```{r}
+ggplot(df_deg, aes(x = degree)) + 
+  geom_line(aes(y = cumul, group = net, colour = net)) + 
+  geom_ribbon(data = df_deg_synth, aes(ymin = lower, ymax = upper), fill = "gray90") + 
+  geom_line(data = df_deg_synth, aes(y = mid)) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  # facet_grgid(~synth) + 
+  theme_bw() + 
+  ggtitle("Comparison of power laws between networks") + 
+  theme(aspect.ratio = 1)
+ggsave(filename = "0a_network/power_law_density.pdf", width = 7, height = 6)
+```
+
+```{r}
+df_synth <- plyr::ldply(
+  list_synth, 
+  describe_net, 
+  .id = "network_id"
+) %>% 
+  select(-network_id) %>%
+  summarise_all(funs(mean = mean, sd = sd)) %>% 
+  gather(key = "key", value = "value") %>% 
+  separate(key, into = c("index", "stat"), sep = "_") %>% 
+  spread(key = "stat", value = "value") %>% 
+  mutate(text = ifelse(
+    sd > 1e-10, 
+    paste0(format(mean, digits = 5), "(", format(sd, digits = 2), ")"), 
+    format(mean, digits = 5, drop0trailing = TRUE))) 
+
+df_nets <- plyr::ldply(
+  list(BioGRID = g.network, 
+       HPRD = g_cc
+       # Synthetic = do.call(barabasi.game, ref_params)
+       ), 
+  function(x) format(describe_net(x), digits = 5), 
+  .id = "Network"
+) %>% rbind(
+  data.frame(
+    Network = "Synthetic", 
+    t(setNames(df_synth$text, df_synth$index))))
+
+df_nets
+
+latex_table <- knitr::kable(df_nets, format = "latex", row.names = FALSE)
+
+writeLines(latex_table, con = "0a_network/network_properties.tex")
+```
+
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0("00_metadata/0a_sessionInfo.txt"))
+```
+

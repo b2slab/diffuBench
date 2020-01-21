@@ -1,0 +1,6 @@
+"","Bias_Stdev","Degree","dist_abs","dist_mean","PageRank"
+"Bias_Stdev",32,29,16,26,29
+"Degree",29,35,16,25,30
+"dist_abs",16,16,19,18,15
+"dist_mean",26,25,18,33,24
+"PageRank",29,30,15,24,32

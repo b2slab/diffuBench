@@ -1,0 +1,209 @@
+---
+title: "Spectral properties of the null distributions"
+author: "Sergio Picart-Armada"
+date: "April 2, 2019"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+## Packages and parameters
+
+```{r}
+# original project: all/devel/projects/bioinfo/003_diffusion_graphs/code/synthetic/current
+library(igraph)
+library(igraphdata)
+
+library(diffuStats)
+library(magrittr)
+
+library(extrafont)
+
+param <- new.env()
+source("params.R", local = param)
+
+extrafont::loadfonts(quiet = TRUE)
+```
+
+## Helper functions
+
+```{r}
+# x: numeric values to scale
+# scale: dividing factor to amplify differences
+colorV <- function(x, scale = 0.1) {
+  r <- colorRampPalette(c("cornflowerblue", "white", "darkred"))(11)
+  if (!is.null(scale)) {
+    x <- x/scale
+  }
+  x <- pmin(1, pmax(x, -1))
+  
+  # browser()
+  r[6 + 5*x]
+}
+
+# K: kernel matrix with rownames/colnames
+# obs.ids: names of the nodes that are labelled/observed
+get.covar <- function(K, obs.ids) {
+  Khat <- K[, obs.ids] %>% t %>% scale(center = TRUE, scale = FALSE)
+  crossprod(Khat)
+}
+
+# g: toy graph (not too large) to plot
+#    six plots are displayed: 2 eigenvectors from the Laplacian, 
+#    2 from the null covariance and 2 from the null covariance 
+#    with the presence of unlabelled nodes (the ones at the right 
+#    of the layout, roughly 50%)
+# pdf.file: name of the output pdf file
+plot.covar <- function(g, pdf.file, seed = 1, ...) {
+  n <- vcount(g)
+  if (n > 300) warning("This function is conceived to plot small graphs")
+  
+  V(g)$name <- paste0("V", as.numeric(V(g)))
+  V(g)$label <- NA
+  V(g)$frame.color <-  "gray35"
+  V(g)$size <- 7
+  E(g)$color <- "gray85"
+  E(g)$curved <- -.05
+  E(g)$width <- .65
+  
+  set.seed(seed)
+  
+  g$layout <- layout.auto(g) %>% norm_coords
+  g$eigen <- eigen(graph.laplacian(g, normalized = FALSE))
+  g$K <- regularisedLaplacianKernel(g, sigma2 = 1, normalized = FALSE)
+  
+  # plot(g, layout = g$eigen$vectors[, c(n - 2, n - 1)])
+  # plot(g)
+  
+  V(g)$class <- ifelse(g$layout[, 1] <= 0, "left", "right")
+  v.shape <- c(left = "circle", right = "square")
+  
+  # Add attributes
+  # Fiedler vector
+  V(g)$sc.eigenL.2 <- g$eigen$vectors[, n - 1]
+  V(g)$sc.eigenL.3 <- g$eigen$vectors[, n - 2]
+  
+  # Whole covariance 
+  g$covar.all <- get.covar(g$K, V(g)$name)
+  g$eigen.covar.all <- eigen(g$covar.all)
+  
+  sc.covall.1 <- g$eigen.covar.all$vectors[, 1]
+  sc.covall.2 <- g$eigen.covar.all$vectors[, 2]
+  
+  # change sign to be visually comparable to Fiedler and third eigenvector
+  V(g)$sc.covall.1 <- sc.covall.1*sign(cor(sc.covall.1, V(g)$sc.eigenL.2))
+  V(g)$sc.covall.2 <- sc.covall.2*sign(cor(sc.covall.2, V(g)$sc.eigenL.3)) 
+  
+  # left covariance (i.e. only nodes in the left are observed)
+  g$covar.left <- get.covar(g$K, V(g)[class == "left"]$name)
+  g$eigen.covar.left <- eigen(g$covar.left)
+  
+  sc.covleft.1 <- g$eigen.covar.left$vectors[, 1]
+  sc.covleft.2 <- g$eigen.covar.left$vectors[, 2]
+  
+  # adjust sign
+  V(g)$sc.covleft.1 <- sc.covleft.1*sign(cor(sc.covleft.1, V(g)$sc.eigenL.2))
+  V(g)$sc.covleft.2 <- sc.covleft.2*sign(cor(sc.covleft.2, V(g)$sc.eigenL.3)) 
+  
+  # plot to file
+  pdf(file = pdf.file, ...)
+  par(mfrow = c(3, 2), cex.main = .85, mar = c(.7, 0.7, 1.2, 0.7))
+  
+  # 1st row: fiedler and third eigenvector
+  plot(
+    g, 
+    vertex.color = colorV(V(g)$sc.eigenL.2),
+    main = "(A) 2nd eigenvector of unnormalised L")
+  
+  # 2nd plot: 3rd eigenvector
+  plot(
+    g, 
+    vertex.color = colorV(V(g)$sc.eigenL.3), 
+    main = "(B) 3rd eigenvector of unnormalised L")
+  
+  # 2nd row: null covariance (all observed)
+  plot(g, 
+       vertex.color = colorV(V(g)$sc.covall.1), 
+       main = "(C) 1st eigenvector of covariance (all labelled)")
+  plot(g, 
+       vertex.color = colorV(V(g)$sc.covall.2),
+       main = "(D) 2nd eigenvector of covariance (all labelled)")
+  
+  # 3rd row: null covariance (left observed)
+  plot(g, 
+       vertex.color = colorV(V(g)$sc.covleft.1),
+       vertex.shape = v.shape[V(g)$class], 
+       main = "(E) 1st eigenvector of covariance (~50% leftmost labelled)")
+  
+  plot(g, 
+       vertex.color = colorV(V(g)$sc.covleft.2),
+       vertex.shape = v.shape[V(g)$class], 
+       main = "(F) 2nd eigenvector of covariance (~50% leftmost labelled)")
+  
+  dev.off()
+}
+```
+
+
+## Application to toy graphs
+
+```{r}
+# dir.old <- getwd()
+# setwd(param$dir.spectral)
+# knitr::opts_knit$set(root.dir = )
+
+set.seed(1)
+g <- igraph::barabasi.game(n = 150, m = 4, directed = F)
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_barabasi.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+set.seed(1)
+g <- igraph::graph.lattice(dimvector = c(20, 12))
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_lattice.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+set.seed(1)
+g <- igraph::watts.strogatz.game(dim = 2, size = 12, nei = 2, p = .5) %>% largest_cc
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_watts.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+set.seed(1)
+g <- igraph::graph.ring(n = 200)
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_ring.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+set.seed(1)
+g <- igraph::erdos.renyi.game(n = 150, p.or.m = .1) %>% largest_cc
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_erdos.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+set.seed(1)
+g <- igraph::graph.de.bruijn(3, 5) %>% as.undirected %>% simplify
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_brujin.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+# Other nets
+set.seed(1)
+data("karate")
+plot.covar(karate, pdf.file = paste0(param$dir.spectral, "05_karate.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+set.seed(1)
+data("UKfaculty")
+g <- UKfaculty %>% as.undirected %>% simplify
+plot.covar(g, pdf.file = paste0(param$dir.spectral, "05_UKfaculty.pdf"), 
+           width = param$width, height = param$height, family = param$family)
+
+# setwd(dir.old)
+```
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0("00_metadata/02_sessionInfo.txt"))
+```
+

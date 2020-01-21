@@ -1,0 +1,38 @@
+
+Call:
+glm(formula = auroc ~ method + k + r + pmax, family = quasibinomial(link = "logit"), 
+    data = df)
+
+Deviance Residuals: 
+     Min        1Q    Median        3Q       Max  
+-1.02134  -0.09305   0.01126   0.12077   0.80249  
+
+Coefficients:
+                Estimate Std. Error t value Pr(>|t|)    
+(Intercept)     0.723123   0.019411  37.253  < 2e-16 ***
+methodml       -1.525786   0.018431 -82.784  < 2e-16 ***
+methodgm       -1.416019   0.018422 -76.864  < 2e-16 ***
+methodber_s    -0.034075   0.020267  -1.681  0.09273 .  
+methodber_p    -0.004288   0.020355  -0.211  0.83316    
+methodmc       -0.179888   0.019870  -9.053  < 2e-16 ***
+methodz        -0.220846   0.019769 -11.171  < 2e-16 ***
+methodoriginal -0.257260   0.019683 -13.070  < 2e-16 ***
+methodpagerank -0.581509   0.019057 -30.514  < 2e-16 ***
+methodrandom   -1.433939   0.018422 -77.836  < 2e-16 ***
+k3             -0.006050   0.010394  -0.582  0.56053    
+k5             -0.030729   0.010247  -2.999  0.00272 ** 
+r0.5            0.204697   0.010004  20.461  < 2e-16 ***
+r0.7            0.386484   0.010138  38.123  < 2e-16 ***
+pmax1e-03       0.591332   0.011607  50.944  < 2e-16 ***
+pmax1e-04       0.639526   0.011535  55.442  < 2e-16 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+(Dispersion parameter for quasibinomial family taken to be 0.03304053)
+
+    Null deviance: 1283.87  on 10229  degrees of freedom
+Residual deviance:  336.51  on 10214  degrees of freedom
+AIC: NA
+
+Number of Fisher Scoring iterations: 4
+

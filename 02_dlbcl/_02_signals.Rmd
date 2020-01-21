@@ -1,0 +1,197 @@
+---
+title: "Pathway signals"
+author: "Sergio Picart-Armada"
+date: "September 12, 2017"
+output: html_document
+---
+
+```{r}
+library(igraph)
+library(diffuStats)
+library(plyr)
+library(magrittr)
+
+library(ggplot2)
+
+file_kernel <- "~/all/devel/big/diffusion/kernell_dlbcl.RData"
+threshold_fdr <- .1
+
+load("interactome_curated.RData")
+
+param <- list(
+  p_max = c(1e-2, 1e-3, 1e-4), 
+  p = c(3, 5, 10), 
+  r = c(.3, .5, .7)
+)
+list_method <- c("raw", "z")
+list_methods <- c("raw", "ml", "gm", "mc", "z")
+
+list_raw <- dlply(
+  g_cc$kegg_mapped, 
+  "pathway", 
+  function(df) unique(df$gene)
+)
+
+# take only pathways larger than 30 genes
+list_pathways <- list_raw[sapply(list_raw, length) >= 30]
+
+# background
+id_all <- V(g_cc)$geneID
+id_obs_lym <- V(g_cc)[obs_lym]$geneID
+id_hid_lym <- V(g_cc)[!obs_lym]$geneID
+id_obs_all <- V(g_cc)[obs_all]$geneID
+id_hid_all <- V(g_cc)[!obs_all]$geneID
+
+id <- list(all = id_all, obs_lym = id_obs_lym, obs_all = id_obs_all)
+
+stopifnot(length(id_all) == length(unique(id_all)))
+
+# function returns a matrix with simulated p-values and ground truth
+sample_genes <- function(list_path, 
+  bkgd, 
+  p_max, 
+  r, 
+  p, 
+  n_trials) {
+  
+  # browser()
+  
+  # generate ground truth
+  truth <- lapply(
+    integer(n_trials), 
+    function(dummy){
+      # sample p pathways 
+      paths <- sample(list_path, p)
+      # sample a proportion of r genes in each
+      genes_de <- lapply(
+        paths, 
+        function(path) {
+          sample(as.character(path), size = r*length(path))
+        }
+      ) #%>% unlist %>% unique
+      # genes_truth <- unique(unlist(paths))
+      
+      list(genes_de = genes_de, genes_truth = paths)
+      # genes_de
+    }
+  )
+  
+  # generate p-values
+  mat_input <- sapply(
+    truth, 
+    function(trial) {
+      # uniform p-values
+      ans <- setNames(
+        runif(n = length(bkgd)), 
+        bkgd
+      )
+      # modify p-values from input to cap at p_max
+      input <- as.character(unlist(unique(trial$genes_de)))
+      ans[input] <- runif(n = length(input), min = 0, max = p_max)
+      
+      ans
+    }
+  ) %>% set_colnames(paste0("run", 1:n_trials))
+  
+  mat_validation <- sapply(
+    truth, 
+    function(trial) {
+      ans <- setNames(
+        integer(length = length(bkgd)), 
+        bkgd
+      )
+      # modify values from ground truth
+      ground <- as.character(unlist(unique(trial$genes_truth)))
+      ans[ground] <- 1L
+      
+      ans
+    }
+  ) %>% set_colnames(paste0("run", 1:n_trials))
+  
+  list(truth = truth, mat_input = mat_input, mat_validation = mat_validation)
+}
+
+if (!file.exists(file_kernel)) {
+  K <- regularisedLaplacianKernel(g_cc)
+  save(K, file = file_kernel)
+} else {
+  load(file_kernel)
+}
+rownames(K) <- colnames(K) <- V(g_cc)$geneID
+
+# input <- lapply(
+#   id, 
+#   function(ids) {
+#     ans$mat_input[ids, ]
+#   })
+
+# generate signal
+ans <- sample_genes(list_pathways, id_all, 1e-5, .5, 10, 5e2)
+
+obs <- id_obs_lym
+val <- id_obs_lym
+# val <- id_hid_lym
+
+input <- apply(
+  ans$mat_input[obs, ], 
+  2, 
+  function(x) {
+    1*(p.adjust(x, method = "fdr") < threshold_fdr)
+  })
+
+non_empty <- colSums(input) > 0
+
+input <- input[, non_empty]
+validation <- ans$mat_validation[val, non_empty]
+
+stopifnot(ncol(input) > 0)
+
+pr <- setNames(
+  page.rank(graph = g_cc, directed = FALSE)$vector, 
+  V(g_cc)$geneID
+) 
+
+list_diff <- lapply(
+  setNames(list_methods, list_methods), 
+  function(m) {
+    diffuse(
+      K = K, scores = input, method = m
+    )
+  }
+)
+list_null <- list(
+  original = -log(ans$mat_input[val, non_empty]), 
+  pagerank = replicate(n = ncol(input), expr = pr[val]) %>% set_colnames(colnames(input))
+)
+
+list_auc <- lapply(
+  c(list_diff, list_null), 
+  function(x) {
+    perf_eval(x, validation)
+  }
+) 
+
+df_auc <- plyr::ldply(list_auc, identity, .id = "method")
+
+ggplot(df_auc, aes(x = method, y = auc)) + 
+  geom_boxplot()
+
+# output <- perf(
+#       K = K, 
+#       scores = input, 
+#       validation = validation, 
+#       grid_param = expand.grid(method = list_method)
+#     )
+
+# ggplot(output, aes(x = method, y = auc)) + 
+#   geom_boxplot()
+```
+
+```{r}
+mat_auc <- reshape2::dcast(df_auc, Column ~ method, value.var = "auc")
+
+apply(mat_auc[, -1], 2, median)
+
+wilcox.test(mat_auc$raw, mat_auc$z, paired = TRUE, alternative = "two.sided", conf.int = TRUE)
+```
+

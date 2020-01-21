@@ -1,0 +1,60 @@
+
+Call:
+glm(formula = auprc ~ method + method:strat + k + r + pmax + 
+    array, family = quasibinomial(link = "logit"), data = filter(df_mod, 
+    pmax != "1e-05" & k != "10"))
+
+Deviance Residuals: 
+     Min        1Q    Median        3Q       Max  
+-1.35518  -0.14224  -0.01231   0.12779   2.43391  
+
+Coefficients:
+                            Estimate Std. Error  t value Pr(>|t|)    
+(Intercept)                -2.434102   0.015964 -152.477  < 2e-16 ***
+methodml                   -0.355178   0.015893  -22.348  < 2e-16 ***
+methodgm                   -0.128126   0.015797   -8.111 5.12e-16 ***
+methodber_s                -0.370005   0.015902  -23.267  < 2e-16 ***
+methodber_p                 0.125403   0.015786    7.944 1.99e-15 ***
+methodmc                    0.236103   0.015813   14.931  < 2e-16 ***
+methodz                     0.460704   0.015927   28.926  < 2e-16 ***
+methodoriginal              0.260797   0.015822   16.483  < 2e-16 ***
+methodpagerank             -1.852820   0.019156  -96.724  < 2e-16 ***
+methodrandom               -3.081958   0.027597 -111.678  < 2e-16 ***
+k3                          0.446870   0.006689   66.808  < 2e-16 ***
+k5                          0.617830   0.006619   93.341  < 2e-16 ***
+r0.5                        0.512223   0.006636   77.191  < 2e-16 ***
+r0.7                        0.911581   0.006545  139.275  < 2e-16 ***
+pmax1e-03                   1.548192   0.010074  153.675  < 2e-16 ***
+pmax1e-04                   1.671945   0.010042  166.494  < 2e-16 ***
+arrayALL                    0.146521   0.005168   28.354  < 2e-16 ***
+methodraw:stratid_hid      -2.074921   0.020176 -102.840  < 2e-16 ***
+methodml:stratid_hid       -3.424497   0.036475  -93.886  < 2e-16 ***
+methodgm:stratid_hid       -3.001136   0.028091 -106.837  < 2e-16 ***
+methodber_s:stratid_hid    -1.704917   0.020261  -84.150  < 2e-16 ***
+methodber_p:stratid_hid    -2.230317   0.020339 -109.659  < 2e-16 ***
+methodmc:stratid_hid       -2.917796   0.024050 -121.321  < 2e-16 ***
+methodz:stratid_hid        -2.889103   0.022330 -129.382  < 2e-16 ***
+methodoriginal:stratid_hid -0.337841   0.015830  -21.342  < 2e-16 ***
+methodpagerank:stratid_hid -1.594292   0.033531  -47.547  < 2e-16 ***
+methodrandom:stratid_hid   -0.969161   0.046776  -20.719  < 2e-16 ***
+methodraw:stratid_all      -0.563543   0.016058  -35.095  < 2e-16 ***
+methodml:stratid_all       -2.120986   0.022594  -93.874  < 2e-16 ***
+methodgm:stratid_all       -1.567769   0.018550  -84.516  < 2e-16 ***
+methodber_s:stratid_all    -0.528110   0.016598  -31.817  < 2e-16 ***
+methodber_p:stratid_all    -0.635782   0.016018  -39.692  < 2e-16 ***
+methodmc:stratid_all       -1.430070   0.017101  -83.624  < 2e-16 ***
+methodz:stratid_all        -1.499904   0.016890  -88.802  < 2e-16 ***
+methodoriginal:stratid_all -0.141842   0.015827   -8.962  < 2e-16 ***
+methodpagerank:stratid_all -0.485521   0.024170  -20.088  < 2e-16 ***
+methodrandom:stratid_all   -0.462392   0.040011  -11.557  < 2e-16 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+(Dispersion parameter for quasibinomial family taken to be 0.05588774)
+
+    Null deviance: 18778.8  on 59429  degrees of freedom
+Residual deviance:  3066.6  on 59393  degrees of freedom
+AIC: NA
+
+Number of Fisher Scoring iterations: 6
+

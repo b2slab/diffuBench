@@ -1,0 +1,36 @@
+### R ###
+# History files
+.Rhistory
+.Rapp.history
+
+# Output files from R CMD check
+/*.Rcheck/
+
+# RStudio files
+.Rproj.user/
+
+# heavy scores
+02_dlbcl/04_diffusion_scores/
+.Rproj.user
+
+# packrat versioning
+packrat/lib*/
+packrat/bundles/*
+
+# intermediate latex files
+*.log
+*.synctex.gz
+*.aux
+*.out
+
+# main and suppl
+10_main
+11_supplement
+
+# compiled pdf files
+10_main/main.pdf
+11_supplement/supplement-math-properties.pdf
+all.zip
+
+# other
+*.zip

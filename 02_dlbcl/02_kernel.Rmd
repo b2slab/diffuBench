@@ -1,0 +1,35 @@
+---
+title: "Pathway signals"
+author: "Sergio Picart-Armada"
+date: "September 12, 2017"
+output: html_document
+---
+
+# Compute the regularised Laplacian kernel
+
+```{r}
+library(igraph)
+library(diffuStats)
+library(plyr)
+library(magrittr)
+
+library(ggplot2)
+
+source("params.R")
+
+load(file_graph)
+
+if (!file.exists(file_kernel)) {
+  K <- regularisedLaplacianKernel(g_cc)
+  rownames(K) <- colnames(K) <- V(g_cc)$geneID
+  
+  save(K, file = file_kernel)
+}
+```
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/02_sessionInfo.txt"))
+```

@@ -1,0 +1,141 @@
+---
+title: "Interactome diffusion"
+author: "Sergio Picart-Armada"
+date: "September 12, 2017"
+output: html_document
+---
+
+```{r}
+library(igraph)
+library(DLBCL)
+library(ALL)
+
+library(diffuStats)
+library(magrittr)
+
+source("params.R")
+```
+
+```{r}
+data("interactome")
+data("dataLym")
+data("ALL")
+
+# bionet
+# 
+# network
+g_interactome <- igraph.from.graphNEL(interactome)
+g_cc <- diffuStats::largest_cc(simplify(g_interactome))
+
+# gene expression
+# Lymphoma study
+pvals <- cbind(t = dataLym$t.pval, s = dataLym$s.pval)
+rownames(pvals) <- dataLym$label
+pval <- BioNet::aggrPvals(pvals, order = 2, plot = FALSE)
+# ALL study
+# needs package hgu95av2.db
+mapped.eset <- BioNet::mapByVar(ALL, network = interactome, attr = "geneID")
+
+g_cc <- set.vertex.attribute(
+  g_cc, 
+  list_arrays["Lym"], 
+  value = V(g_cc)$name %in% names(pval)
+)
+
+g_cc <- set.vertex.attribute(
+  g_cc, 
+  list_arrays["ALL"], 
+  value = V(g_cc)$name %in% rownames(mapped.eset)
+)
+```
+
+```{r}
+# check mapping hsa-entrez (should be just removing the hsa)
+# df_map <- read.table(
+#   "kegg_ncbi-geneid.txt", 
+#   header = FALSE)
+# colnames(df_map) <- c("V1", "V2")
+# df_map$V1 %<>% gsub(
+#   pattern = "(.+:)(\\d+)", replacement = "\\2", x = .)
+# df_map$V2 %<>% gsub(
+#   pattern = "(.+:)(\\d+)", replacement = "\\2", x = .)
+# stopifnot(all(df_map$V1 == df_map$V2))
+
+char_info <- readLines(paste0(dir_kegg, "/kegg_info.txt"))
+
+df_kegg <- read.table(
+  paste0(dir_kegg, "/kegg_gene2pathway.txt"), 
+  header = FALSE)
+names(df_kegg) <- c("pathway", "gene")
+
+# map to entrez id
+df_kegg$gene %<>% gsub(
+  pattern = "(hsa:)(\\d+)", replacement = "\\2", x = .)
+
+# map to network
+df_pathway <- subset(df_kegg, gene %in% V(g_cc)$geneID)
+list_allgenes <- unique(df_pathway$gene)
+
+nrow(df_pathway)/nrow(df_kegg)
+length(unique(df_pathway$pathway))
+length(list_allgenes)
+
+# save everything inside the graph
+# g_cc$kegg_all <- df_kegg
+g_cc$kegg_mapped <- df_pathway
+g_cc$info <- char_info
+
+if (!file.exists(file_graph)) save(g_cc, file = file_graph)
+```
+
+# Plots
+
+```{r}
+# plot pathway statistics and coverage
+id_all <- V(g_cc)$geneID
+id_kegg <- unique(g_cc$kegg_mapped$gene)
+
+id_obs_lym <- V(g_cc)[obs_lym]$geneID
+id_obs_all <- V(g_cc)[obs_all]$geneID
+
+id_hid_lym <- setdiff(id_all, id_obs_lym)
+id_hid_all <- setdiff(id_all, id_obs_all)
+
+# lym
+VennDiagram::venn.diagram(
+  list(Observed = id_obs_lym, 
+       Hidden = id_hid_lym, 
+       KEGG = id_kegg), 
+    main = "The interactome in Lym and the KEGG pathway db", 
+    fill = colors <- c("darkolivegreen4", 
+      "lightcyan2", 
+      "indianred1"), 
+    alpha = .8, cex = 1, cat.fontface = 1, 
+    lty = 1, fontfamily = 1, imagetype = "png", 
+    filename = paste0(dir_venn, "/venn_lym_kegg.png"))
+
+# all
+VennDiagram::venn.diagram(
+  list(Observed = id_obs_all, 
+       Hidden = id_hid_all, 
+       KEGG = id_kegg), 
+    main = "The interactome in Lym and the KEGG pathway db", 
+    fill = colors <- c("darkolivegreen4", 
+      "lightcyan2", 
+      "indianred1"), 
+    alpha = .8, cex = 1, cat.fontface = 1, 
+    lty = 1, fontfamily = 1, imagetype = "png", 
+    filename = paste0(dir_venn, "/venn_all_kegg.png"))
+
+# remove venn logs
+list.files(path = dir_venn, pattern = "*log", full.names = TRUE) %>% 
+  unlink
+```
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/01_sessionInfo.txt"))
+```
+

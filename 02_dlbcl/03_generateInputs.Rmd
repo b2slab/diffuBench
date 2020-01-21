@@ -1,0 +1,62 @@
+---
+title: "Pathway signals"
+author: "Sergio Picart-Armada"
+date: "September 12, 2017"
+output: html_document
+---
+
+# This file generates the synthetic inputs for the DLBCL dataset
+
+```{r}
+library(igraph)
+library(plyr)
+
+# parameters
+source("params.R")
+# function to generate synthetic data
+source("aux_sample_genes.R")
+source("aux_param2name.R")
+
+# network and pathways
+load(file_graph)
+```
+
+
+```{r}
+# pathways as a list
+# (entrez ids)
+list_raw <- dlply(
+  g_cc$kegg_mapped, 
+  "pathway", 
+  function(df) unique(df$gene)
+)
+
+# take only pathways larger than 30 genes
+list_path <- list_raw[sapply(list_raw, length) >= N_min]
+bkgd <- V(g_cc)$geneID
+
+length(list_path)
+
+# parameters to generate the data
+df_param <- expand.grid(k = k, r = r, pmax = pmax)
+
+set.seed(1)
+a_ply(
+  df_param, 1, 
+  function(params) {
+    signal <- sample_genes(
+      list_path = list_path, bkgd = bkgd, pmax = params$pmax, 
+      r = params$r, k = params$k, n_trials = n_trials
+    )
+    filename <- paste0(dir_simul, "/", param2name(params), ".RData")
+    save(signal, file = filename)
+  }, 
+  .progress = "text")
+```
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/03_sessionInfo.txt"))
+```

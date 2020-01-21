@@ -1,0 +1,26 @@
+
+	 Simultaneous Tests for General Linear Hypotheses
+
+Fit: glm(formula = paste0(metric, "~ method + method:Biased"), family = quasibinomial(link = "logit"), 
+    data = df_mod)
+
+Linear Hypotheses:
+                                 Estimate Std. Error z value Pr(>|z|)    
+(Intercept) == 0               -3.784e+00  2.538e-01 -14.907   <0.001 ***
+methodber_s == 0                3.680e-15  3.590e-01   0.000   1.0000    
+methodber_p == 0                5.430e-02  3.544e-01   0.153   1.0000    
+methodmc == 0                  -5.943e-01  4.229e-01  -1.405   0.8283    
+methodz == 0                   -1.413e-01  3.718e-01  -0.380   1.0000    
+methodpagerank == 0            -3.244e+00  1.283e+00  -2.528   0.1233    
+methodrandom == 0              -3.173e+00  1.240e+00  -2.558   0.1140    
+methodraw:BiasedTRUE == 0       4.756e-01  3.774e-01   1.260   0.9034    
+methodber_s:BiasedTRUE == 0     4.756e-01  3.774e-01   1.260   0.9034    
+methodber_p:BiasedTRUE == 0     4.349e-01  3.718e-01   1.170   0.9378    
+methodmc:BiasedTRUE == 0        1.096e+00  4.366e-01   2.510   0.1289    
+methodz:BiasedTRUE == 0         1.124e+00  3.507e-01   3.204   0.0164 *  
+methodpagerank:BiasedTRUE == 0  2.451e+00  1.359e+00   1.804   0.5383    
+methodrandom:BiasedTRUE == 0    1.126e+00  1.544e+00   0.730   0.9983    
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+(Adjusted p values reported -- single-step method)
+

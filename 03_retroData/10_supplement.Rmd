@@ -1,0 +1,663 @@
+---
+title: "Supplement 4: prospective pathway prediction on BioGRID"
+author: 
+  - "Sergio Picart-Armada"
+  - "Wesley K. Thompson"
+  - "Alfonso Buil"
+  - "Alexandre Perera-Lluna"
+date: "October 18, 2018"
+bibliography: "10_bibliography.bib"
+output: bookdown::pdf_document2
+---
+
+```{r, echo = FALSE}
+# Hide the code, suppress messages and warnings
+# otherwise document gets too long
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                      fig.height = 3, fig.align = 'center')
+```
+
+\clearpage
+
+# Introduction
+
+This additional file contains details on the prospective pathway prediction case study.
+A protein-protein interaction network and biological pathways, both from year 2011, were used to predict new genes in the same pathways from 2018.   
+This document can be re-built anytime by knitting its corresponding `.Rmd` file.
+
+```{r}
+# requires knitr and bookdown
+
+# nets
+library(igraph)
+library(diffuStats)
+
+# manipulation
+library(reshape2)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+
+# models
+library(emmeans)
+library(stargazer)
+
+# plotting
+library(ggplot2)
+library(ggsci)
+library(grid)
+library(gtable)
+library(grDevices)
+library(extrafont)
+library(xtable)
+
+extrafont::loadfonts(quiet = TRUE)
+
+# network and pathway data
+# library(retroData)
+# data("biogrid2011")
+# data("kegg2011")
+# data("kegg2018")
+
+param <- new.env()
+source("params.R", local = param)
+
+source("../helper_funs.R")
+
+gg_def <- theme_bw() + theme(aspect.ratio = 1)
+
+# Graph and pathways
+load(param$file_dataset)
+
+# Properties of genes and pathways
+load(paste0(param$dir_data, "/props_dataframes.RData"))
+
+# Scores
+load(paste0(param$dir_scores, "/all.RData"))
+
+
+# Models data frame
+load(paste0(param$dir_stats, "/auc_all.RData"))
+load(paste0(param$dir_stats, "/ranking_all.RData"))
+```
+
+
+## The network
+
+We used the BioGRID network [@biogrid2017], weighting its interactions according to [@pathways_confidence_dsd]. 
+Weights depend on the amount of experiments reporting an interaction and their throughput, favouring low-throughput methodologies.  
+In addition, in order to avoid circularity between the new pathway genes and the network construction, the network was restricted to interactions from publications in 2010 or older. 
+This posed a realistic prospective scenario, in which the network might not consistently reflect the novel biology behing the newly added genes. 
+
+Below is a summary of the network:
+
+```{r}
+summary(g.network)
+```
+
+The network contained $`r format(vcount(g.network))`$ nodes and $`r format(ecount(g.network))`$ edges and was connected by construction (only the largest connected component was kept). 
+The edges weights are displayed in figure \@ref(fig:edge-weights), revealing two broad categories: low-confidence ones, with a weight of $0.25$, and high-confidence ones, with a weight of $0.8$ or higher. 
+
+```{r edge-weights, fig.pos = 'h', fig.cap='Distribution of the edge weights in the BioGRID network.'}
+ggplot(data.frame(weight = E(g.network)$weight), aes(x = weight)) + 
+  geom_histogram(bins = 30) + 
+  xlab("Edge weight") + 
+  ylab("Edge count") + 
+  gg_def
+```
+
+# Descriptive statistics
+
+## KEGG pathways
+
+The Kyoto Encyclopedia of Genes and Genomes (KEGG) pathways [@kegg2017] was used as input and validation for the diffusion scores. 
+Pathways were treated as gene sets, only relying on the network data from BioGRID.
+
+An older version of the pathways, dating from 2011, was used to predict new pathway genes in 2018. 
+The last public version of KEGG, dated from March 14th 2011, was obtained from the `KEGG.db` package [@keggdb2011]. Likewise, a more recent KEGG release was downloaded in August 18th, 2018 from `https://www.kegg.jp/kegg/rest/keggapi.html`. 
+
+A total of `r nrow(df_bias_path)` KEGG pathways had at least one additional gene in the latest version, after mapping the genes to the BioGRID network.
+Figure \@ref(fig:path-oldgenes) shows that most pathways contained up to $200$ genes, while figure \@ref(fig:path-newgenes) depicts how they typically involved less than $20$ new genes. 
+Likewise, figure \@ref(fig:genes-npaths) describes how ubiquitous new genes were: most of the new genes belonged to a single pathway. 
+
+```{r path-oldgenes, fig.cap='Number of genes per pathway in the older KEGG release'}
+ggplot(data.frame(n_old = colSums(mat.old)), aes(x = n_old)) + 
+  geom_histogram(bins = 50) + 
+  xlab("Number of genes in old pathway") + 
+  ylab("Pathway count") + 
+  gg_def
+```
+
+```{r path-newgenes, fig.cap='Number of new genes per pathway in the latest KEGG release'}
+ggplot(df_bias_path, aes(x = n_new)) + 
+  geom_histogram(bins = 50) + 
+  xlab("Number of new genes") + 
+  ylab("Pathway count") + 
+  gg_def
+```
+
+```{r genes-npaths, fig.cap='Number of pathways involving each new gene'}
+df_bias_pathgene %>% 
+  filter(new_pos == "new") %>%
+  group_by(id) %>% 
+  summarise(N = n()) %>%
+  ggplot(aes(x = N)) + 
+  geom_bar(stat = "count") +
+  xlab("Number of pathways involving new gene") + 
+  ylab("Number of new genes") + 
+  gg_def
+```
+
+
+## Theoretical bias in diffusion scores
+
+In this occasion, the inherent bias of the diffusion scores was not related to the expected value of each node under input permutations. 
+Given the present setup, where all the nodes were considered as _labelled_,  $b_{\mu}^{\mathcal{K}}$ is constant and thus the `raw` scores must have a constant expected value on all the nodes (see proofs on properties of diffusion scores from Supplement 1). 
+However, differences existed in terms of __variance__.
+We hypothesised that this led to a variance-related bias, where some nodes would exhibit more stable diffusion scores whereas others could greatly vary under input permutations. 
+Specifically, we hypothesised that `z` would improve the power on low-variance nodes.
+Variance-related bias was quantified through ther reference variance $b_{\sigma^2}^{\mathcal{K}}$, defined in the main text as proportional to the logarithm of the node variance.
+
+Before framing the genes into pathways, figure \@ref(fig:gene-degree) suggests that the variance was mainly driven by the node degree.
+The diffusion scores of highly connected nodes were therefore expected to be less sensitive to perturbations in the input.
+
+```{r gene-degree, fig.cap='Variance-related bias across all the genes in terms of degree. The gray line shows the best linear fit.', fig.height=4.5, fig.width=4.5}
+ggplot(df_props_genes, aes(x = Degree, y = Var_bias)) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "lm", colour = "white", size = 2) +
+  geom_smooth(method = "lm", colour = "gray40") +
+  scale_x_log10() + 
+  xlab("Gene degree (number of connections)") + 
+  ylab(vbias_text) + 
+  gg_def
+```
+
+Figure \@ref(fig:gene-bias) depicts the reference variance $b_{\sigma^2}^{\mathcal{K}}$, dividing genes into four categories: _old_ for the genes in the old and new pathway, _new_ for the genes only in the new pathway, _old\_fp_ for the genes only in the old pathway and _other_ for the rest of genes. 
+Note that a gene can belong to several categories, i.e. _new_ for one pathway and _other_ for another.
+Figure \@ref(fig:gene-bias) suggests that the properties of _old_, _new_ and _other_ genes are essentially different and linked to their topological properties.
+
+```{r gene-bias, fig.cap='Variance-related bias across all the genes. Each unique gene appears exactly once for every pathway.'}
+ggplot(df_bias_pathgene, aes(x = new_pos, y = var_bias)) + 
+  geom_boxplot() + 
+  xlab("Type of gene") + 
+  ylab(vbias_text) + 
+  gg_def 
+```
+
+The same magnitude was depicted in terms of pathways, representing the median value of $b_{\sigma^2}^{\mathcal{K}}(i)$ for its _new_ genes, see figure \@ref(fig:path-bias). 
+The plot suggest that the _new_ genes can have two sorts of biases, specifically a standard deviation either (i) lower or (ii) higher than that of the _other_ network genes in general. 
+
+```{r path-bias, fig.cap='Variance-related bias across all the pathways. The median reference variance of the new and the other genes for each pathway is represented, leading to two data points per pathway. Pathways were divided in two groups according to their number of new genes.', fig.height=5}
+gather(df_bias_path, "type", "median_bias", median_new, median_other) %>% 
+  mutate(g5 = ifelse(n_new > 5, "Pathways with >5 new genes", "Pathways with <=5 new genes"), 
+         type = gsub(pattern = "median_", replacement = "", x = type)) %>%
+  ggplot(aes(x = type, y = median_bias)) + 
+  geom_boxplot(width = .5) + 
+  facet_wrap(~g5) + 
+  xlab("Type of genes with respect to every pathway") + 
+  ylab(vbias_text_median_pathway) + 
+  gg_def 
+```
+
+Differences in $b_{\sigma^2}^{\mathcal{K}}(i)$ between _new_ and _other_ genes were tested using `wilcox.test` and correcting for False Discovery Rate (FDR) [@fdr], see figure \@ref(fig:path-bias-test). 
+Differences at $\textrm{FDR} < 0.1$ could be proven for pathways some pathways, almost always with more than 5 _new_ genes. 
+Significant differences were usually negative (i.e. _other_ genes having a greater median, in line with figure \@ref(fig:path-bias)), but positive differences existed too. 
+
+```{r}
+df_test <- group_by(df_bias_pathgene, pathway) %>% 
+  summarise(
+    g5 = ifelse(sum(new_pos == "new") > 5, ">5", "<=5"), 
+    difference_medians = median(var_bias[new_pos == "new"]) - 
+      median(var_bias[new_pos == "other"]), 
+    pvalue_wilcox = wilcox.test(x = var_bias[new_pos == "new"], 
+                                y = var_bias[new_pos == "other"])$p.value) %>% 
+  mutate(fdr = p.adjust(pvalue_wilcox, method = "fdr"), 
+         fdr_cut = cut(fdr, breaks = c(0, 1e-5, 1e-2, .1, .2, .5, 1), 
+                       include.lowest = TRUE))
+```
+  
+```{r path-bias-test, fig.height=3.5, fig.cap='Statistical differences on the reference variances of new versus other genes in each pathway. Each data point represents a pathway. Differences were stratified by the amount of new genes, which affects the statistical power to spot differences.', fig.height=4.5}
+set.seed(2) # for jitter
+ggplot(df_test, aes(x = fdr_cut, y = difference_medians, color = g5)) + 
+  geom_hline(yintercept = 0, lty = 3, colour = "gray50") + 
+  geom_jitter(width = .2, size = 1) + 
+  scale_colour_manual(values = colour_pathwaysize, name = "New genes") + 
+  xlab(vbias_text_fdr) + 
+  ylab(vbias_text_pathway) + 
+  gg_def + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+## Diffusion inputs
+
+As the pathways were treated as gene sets, inputs were naturally defined as binary labels without further modification. 
+Note that pathways could contain genes that were present in the old release but dropped in the last one, acting as a _false positive_.
+In total, `r nrow(df_bias_path)` instances (one per pathway) were defined and genes outside the original pathway were ranked.
+Afterwards, the AUROC and AUPRC metrics were computed and compared through explanatory models. 
+
+## Diffusion scores and bias
+
+Before diving into pathway-wise performance metrics, diffusion scores `raw` and `z` were compared in views of the variance-related bias. 
+Figure \@ref(fig:bias-rank-raw-z) sheds light on the expected behaviour of the statistical normalisation and supports the hypothesis that normalising the scores helps decorrelate power from the reference variance values.
+The actual impact on overall performance still depends on other factors, such as the density of positives throughout the reference variances.
+
+As for method parameters, the regularised (unnormalised) Laplacian kernel was used and permutation-based scores used $`r param$n.perm`$ random trials. 
+Methods `ml`, `gm` and `ber_s` were excluded from this comparison because their ranking is identical to that of `raw` in the current settings, see the diffusion scores equivalence properties 1 (`ml`, `gm`) and 3 (`ber_s`) in Supplement 1. 
+Two baselines were considered: `pagerank` (with `damping = 0.85`), which tends to suggest central genes regardless of the input, and `random` (random prioritisation).
+
+```{r}
+df_rank_plotpos <- filter(df_rank, method %in% c("raw", "z") & partition == "d1g") %>% 
+  join(mutate(df_props_genes, id_positive = id)) %>% 
+  arrange(rank_positive)
+```
+
+```{r bias-rank-raw-z, fig.height=3.5, fig.cap='Ranking of true positives as a function of the variance-related bias; lines correspond to a logistic fit with 0.95 confidence intervals. This plot represents the union of the positives of each pathway and their relative ranking in their prioritisation. Nodes closer to 0 were top ranked for that specific pathway, and therefore well prioritised, whereas worst ranked nodes were close to 1. The unnormalised scores raw had more power on nodes with lower standard deviation, at the cost of being less sensitive among larger standard deviations. The normalised scores z showed a more bias-independent power, at the cost of missing positives with smaller standard deviations.'}
+ggplot(df_rank_plotpos, aes(x = Var_bias, y = rank_positive, 
+                            colour = method, fill = method)) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), 
+              size = 2, colour = "white") + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial")) +
+  # geom_smooth(method = "loess") +
+  scale_colour_manual(values = colour_npg, name = "Method") + 
+  scale_fill_manual(values = colour_npg, name = "Method") + 
+  theme_bw() + 
+  xlab(vbias_text) + 
+  ylab("Ranking of true positive (lower is better)") + 
+  theme(aspect.ratio = 1)
+```
+
+# Models
+
+## Model definition
+
+```{r}
+df_mod <- filter(
+  df_auc,
+  partition %in% c("d1g") &
+    size_novelgenes >= 1 &
+    !(method %in% c("ml", "gm", "ber_s"))) %>%
+  mutate(Biased = as.factor(Biased), 
+         Biased_ng5 = size_novelgenes >= 5, 
+         Bias_lognew = log(size_novelgenes)) %>% 
+  join(select(df_bias_path, pathway, median_new, median_other)) %>% 
+  mutate(path_var_ref = as.numeric(median_new - median_other))
+```
+
+The metrics AUROC and AUPRC were modelled through dispersion-adjusted quasibinomial logit models, see `?stats::quasibinomial` in an R console:
+
+$$ \textrm{metric} \sim \textrm{method} + \textrm{method:path\_var\_ref}$$
+
+The categorical variable `method` could be `raw`, `ber_p`, `mc`, `z` or the baselines `pagerank` and `random`.
+The term `path_var_ref` was a pathway property, computed as the difference between the median of the reference variance $b_{\sigma^2}^{\mathcal{K}}(i)$ for the _new_ genes in the pathway, and the median of $b_{\sigma^2}^{\mathcal{K}}(i)$ for the _other_ genes, as depicted in figure \@ref(fig:path-bias-test). 
+`path_var_ref` intended to summarise the bias of a whole pathway in a single number: positive (negative) values indicated that the _new_ genes had more (less) variance than the average gene in the network. 
+In order to test our hypothesis, the interaction term `method:path_var_ref` allowed methods to be affected in different ways by the pathway-wise bias. 
+
+## AUROC
+
+Table \@ref(tab:mod-auroc-rk) summarises the AUROC model. 
+As this case study was not simulated, the number of data points was limited due to the prospective design, being notably lower than that of the other datasets.  
+
+```{r, results='asis'}
+mod_auroc <- glm(
+  auroc ~ method + method:path_var_ref,
+  data = df_mod,
+  family = quasibinomial(link = "logit"))
+
+stargazer::stargazer(
+  mod_auroc, ci = TRUE, ci.level = 0.95, header = FALSE, 
+  single.row = TRUE, omit.table.layout = "mdl",  label = "tab:mod-auroc-rk", 
+  title = "Quasibinomial model for AUROC")
+```
+
+The model in table \@ref(tab:mod-auroc-rk) supported the claim that `raw` was more affected than `z` by the reference variance. 
+Figure \@ref(fig:pred-auroc-confint) reflects this fact along the values of `path_var_ref`, whereas the contrast between the interaction terms (i.e. of the form `method:path_var_ref`) of `raw` and `z` was significant:
+
+```{r}
+# because we are evaluating the different trends of each 
+# level in the "method" factor, we must use emtrends instead of emmeans
+# https://cran.r-project.org/web/packages/emmeans/vignettes/interactions.html#covariates
+emt_interaction_auroc <- emtrends(
+  mod_auroc, var = "path_var_ref", 
+  specs = "method", type = "response") 
+contrast(emt_interaction_auroc, method = "pairwise")
+```
+
+Predictions with confidence intervals in the mean value of `path_var_ref` are shown in figure \@ref(fig:pred-auroc-0), whereas their raw values can be found in figure \@ref(fig:auroc-all) -- both figures depict similar trends. 
+Testing overall differences (averaging over `path_var_ref` and using Tukey's test), `z` significantly outperformed `raw`:
+
+```{r}
+emm_auroc <- emmeans(
+  mod_auroc, specs = c("method"), 
+  type = "response", nesting = NULL)
+  
+df_auroc <- summary(emm_auroc)
+
+contrast(emm_auroc, method = "pairwise")
+```
+
+A paired non-parametric test outside the model yielded stronger evidence of such differences, see table \@ref(tab:auroc-fdr).
+
+\begin{table}
+\resizebox{\textwidth}{!} {
+```{r, results='asis'}
+df_mod %>% 
+  reshape2::acast(pathway~method, value.var = "auroc") %>% 
+  diffuStats::perf_wilcox() %>% 
+  xtable::xtable() %>% 
+  print(include.rownames = TRUE, comment = FALSE, floating = FALSE)
+```
+}
+\caption{Paired two-sided Wilcoxon test between AUROCs, corrected by FDR. Above diagonal: differences with 0.95 confidence interval. Below diagonal: FDR.}
+\label{tab:auroc-fdr}
+\end{table}
+
+
+```{r pred-auroc-confint, fig.cap='Prediction of the AUROC model by method along the reference pathway variance, represented by path\\_var\\_ref. Shaded are the 0.95 confidence intervals for the predicted mean AUROC.', fig.width=6, fig.height=6}
+# I think this model is equivalent to ours, as it must have 8 params
+ggplot(df_mod, aes(x = path_var_ref, y = auroc, colour = method, fill = method)) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), 
+              size = 2, colour = "white") + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), se = FALSE) +
+  scale_colour_manual(values = colour_npg, name = "Method") + 
+  scale_fill_manual(values = colour_npg, name = "Method") + 
+  theme_bw() + 
+  xlab(vbias_text_pathway) + 
+  ylab("Pathway AUROC") + 
+  theme(aspect.ratio = 1)
+```
+
+
+```{r pred-auroc-0, fig.cap='Predictions using the AUROC model (0.95 confidence intervals). Predictions were averaged over the path\\_var\\_ref covariate.', fig.width=4, fig.height=4}
+ggplot(df_auroc, aes(x = method, colour = method)) + 
+  geom_hline(yintercept = 0.5, lty = 3, color = "gray45") +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = .3, position = "dodge") + 
+  geom_point(aes(y = prob), size = 2.5) + 
+  scale_colour_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("Method") + 
+  ylab("Predicted mean AUROC") + 
+  theme(aspect.ratio = 1, strip.text.y = element_text(angle = 0), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, colour = "black"), 
+        axis.text.y = element_text(colour = "black")) 
+```
+
+```{r auroc-all, fig.cap='AUROC for all the pathways, by method.', fig.width=4, fig.height=4}
+ggplot(df_mod, aes(x = method, y = auroc)) + 
+  geom_hline(yintercept = .5, lty = 3, colour = "gray50") + 
+  geom_boxplot(aes(fill = method), outlier.shape = NA, width = .5) + 
+  geom_jitter(aes(fill = method), colour = "black", pch = 21, width = 0.15, size = 1) +
+  scale_fill_manual(values = colour_npg, guide = FALSE) +
+  scale_colour_manual(values = colour_npg, guide = FALSE) +
+  xlab("Method") + 
+  ylab("Pathway-wise AUROC") + 
+  gg_def
+```
+
+Note how by its own definition, the `pagerank` centrality baseline was noticeably affected by the bias, in a similar way to the `raw` scores (figure \@ref(fig:pred-auroc-confint)). 
+This was expected because node degree, the most basic measure of centrality, showed collinearity with the reference variance (figure \@ref(fig:gene-degree)).
+Provided that pathway biases were found in both directions, i.e. genes with either more or less variance than most genes (figure \@ref(fig:path-bias-test)), `pagerank` had a close-to-random AUROC (figure \@ref(fig:auroc-all)).
+On the other hand, the `random` baseline behaved as expected, with an AUROC close to $0.5$ and independent of the reference pathway variance (figure \@ref(fig:pred-auroc-confint)).
+
+
+\clearpage
+
+## AUPRC
+
+The model on AUPRC pointed out that early retrieval was challenging in this prospective study.
+Even though proper methods did outperform the baselines, performances were low, also due to the heavy class imbalance.
+
+Table \@ref(tab:mod-auprc-rk) describes the `quasilogistic` model -- differences were minimal between methods, lacking statistical support. 
+Furthermore, figure \@ref(fig:pred-auprc-0) proves how the 0.95 confidence intervals on the mean value of `path_var_ref` are overlapping.
+
+Besides, AUPRC is affected by the class imbalance, meaning that pathways with few new genes were expected to yield low values of AUPRC. 
+
+Due to the two reasons above, AUPRC was not useful to describe differences between methods, but to highlight the difficult nature of this prospective analysis. 
+The fact that an old network was used rules out possible circularities, i.e. the new genes being included in the pathways and in new interactions, based on the same data source. 
+
+```{r, results='asis'}
+mod_auprc <- glm(
+  auprc ~ method + method:path_var_ref,
+  data = df_mod,
+  family = quasibinomial(link = "logit"))
+
+stargazer::stargazer(
+  mod_auprc, ci = TRUE, ci.level = 0.95, header = FALSE, 
+  single.row = TRUE, omit.table.layout = "mdl",  label = "tab:mod-auprc-rk", 
+  title = "Quasibinomial model for AUPRC")
+```
+
+```{r}
+df_auprc <- emmeans(
+  mod_auprc, specs = c("method"), 
+  type = "response", nesting = NULL) %>% 
+  summary
+```
+
+```{r pred-auprc-confint, fig.pos = 'h', fig.cap='Prediction of the AUPRC model by method along the reference pathway variance, represented by path\\_var\\_ref. Shaded are the 0.95 confidence intervals for the predicted mean AUPRC.', fig.width=6, fig.height=6}
+ggplot(df_mod, aes(x = path_var_ref, y = auprc, colour = method, fill = method)) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), size = 2, colour = "white") + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), se = FALSE) +
+  scale_colour_manual(values = colour_npg, name = "Method") + 
+  scale_fill_manual(values = colour_npg, name = "Method") + 
+  theme_bw() + 
+  xlab(vbias_text_pathway) + 
+  ylab("Pathway AUPRC") + 
+  theme(aspect.ratio = 1)
+```
+
+```{r pred-auprc-0, fig.cap='Predictions using the AUPRC model (0.95 confidence intervals). Predictions were averaged over the path\\_var\\_ref covariate.', fig.width=4, fig.height=4}
+ggplot(df_auprc, aes(x = method, colour = method)) + 
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = .3, position = "dodge") + 
+  geom_point(aes(y = prob), size = 2.5) + 
+  scale_colour_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("Method") + 
+  ylab("Predicted mean AUPRC") + 
+  theme(aspect.ratio = 1, strip.text.y = element_text(angle = 0), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, colour = "black"), 
+        axis.text.y = element_text(colour = "black")) 
+```
+
+Performing a paired Wilcoxon test yielded no evidence that `raw` and `z` had different AUPRCs (Table \@ref(tab:auprc-fdr)).
+The fact that `mc` was actually performing slighly worse than the rest of methods was deemed uninformative, given the actual magnitude of the effect and the overall low AUPRCs.
+
+\begin{table}
+\resizebox{\textwidth}{!} {
+```{r, results='asis'}
+df_mod %>% 
+  reshape2::acast(pathway~method, value.var = "auprc") %>% 
+  diffuStats::perf_wilcox() %>% 
+  xtable::xtable() %>% 
+  print(include.rownames = TRUE, comment = FALSE, floating = FALSE)
+```
+}
+\caption{Paired two-sided Wilcoxon test between AUPRCs, corrected by FDR. Above diagonal: differences with 0.95 confidence interval. Below diagonal: FDR.}
+\label{tab:auprc-fdr}
+\end{table}
+
+For completeness, we checked for significant differences between `raw` and `z` in the interaction term, because table \@ref(tab:mod-auprc-rk) may suggest that `z` could be more affected than `raw` by the reference variances. 
+In line with the other results, this counterintuitive claim could not be proven after a contrast on the interaction term `method:path_var_ref`:
+
+```{r}
+emt_interaction_auprc <- emtrends(
+  mod_auprc, var = "path_var_ref", 
+  specs = "method", type = "response") 
+contrast(emt_interaction_auprc, method = "pairwise")
+```
+
+\clearpage
+
+## Other remarks
+
+The present case study served as an illustrative example of variance-related bias in diffusion scores. 
+
+* The effect of the bias correction was not as straightforward as the mean value-related bias. 
+We hypothesised that `z` would have more power on low-variance nodes compared to `raw`, but our findings support the opposite.
+The counterintuitive nature of this bias encourages an additional layer of caution. 
+* Normalising the diffusion scores led to a more bias-independent power for AUROC, in line with our hypothesis. 
+* AUROC was more informative than AUPRC and helped identify bias-related trends in predictive power. 
+* Again, the overall performance, and therefore the decision on normalising, relied on the distribution of the positives with respect to the reference variance. 
+In this particular instance, `z` outperformed `raw`.
+* For all the methods, new positives with higher variances were harder to recover, although this was less pronounced in `z`. 
+High variance nodes tended to have a low degree, so we speculate that the network was incomplete when describing their biology, thus limiting the performance in their respective pathways.
+
+```{r, results='hide'}
+# figures for the main body
+font <- "Arial"
+gg_main <- theme(text = element_text(size = 7.5, family = font))
+
+set.seed(2) # for jitter
+g1 <- ggplot(df_test, aes(x = fdr_cut, y = difference_medians, color = g5)) + 
+  geom_hline(yintercept = 0, lty = 2, colour = "gray50") + 
+  geom_jitter(width = .2, size = .5) + 
+  scale_colour_manual(values = colour_pathwaysize, name = "New genes") + 
+  xlab(vbias_text_fdr) + 
+  ylab(vbias_text_pathway) + 
+  gg_def + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1), 
+        legend.title = element_text(size = 7), 
+        legend.text = element_text(size = 6.5),
+        legend.margin = margin(t = 1.5, r = 1.5, b = 1.5, l = 1.5, unit = "mm"), 
+        legend.justification = c(0, 0), 
+        legend.position = c(0, 0), 
+        legend.box.background = element_rect(colour = "gray20"))  + 
+  gg_main
+
+g2 <- ggplot(df_rank_plotpos, aes(x = Var_bias, y = rank_positive, 
+                                  colour = method, group = method)) + 
+  geom_smooth(aes(fill = method), method = "glm", 
+              method.args = list(family = "quasibinomial"), 
+              se = TRUE, alpha = 1) + 
+  scale_fill_manual(values = scales::col2hcl(colour_npg, l = 90)) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), 
+              size = 2, colour = "white", se = FALSE) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), 
+              se = FALSE) +
+  # geom_smooth(method = "loess") +
+  scale_colour_manual(values = colour_npg, name = "Method") + 
+  theme_bw() + 
+  xlab(vbias_text) + 
+  ylab("Ranking of true positive (lower is better)") + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1), 
+        aspect.ratio = 1, 
+        legend.position = "none")  + 
+  gg_main
+
+# Prepare plot of model coefficients
+df_auroc_coef <- data.frame(
+  coef = coef(mod_auroc), 
+  set_colnames(confint(mod_auroc, level = .95), c("lower", "upper"))) %>% 
+  mutate(label_original = rownames(.)) %>% 
+  filter(label_original != "(Intercept)") %>%
+  mutate(label_plot = gsub("method", "", x = label_original), 
+         label_plot = gsub("path_var_ref", "var_ref", x = label_plot), 
+         type_interact = grepl(":", x = label_plot),
+         type_label = ifelse(type_interact, "Interaction method:path_var_ref", "Main effect"), 
+         method = factor(gsub(":.+", "", x = label_plot), levels = names(colour_npg))) 
+
+# trick: insert the hline by multiplying type_interact by 1L -> 0L intercept, 1L interact
+# and then filter the dataset so only the 0L is included
+g3 <- ggplot(df_auroc_coef, aes(x = type_label, colour = method)) + 
+  geom_hline(aes(yintercept = type_interact*1L), 
+             lty = 2, colour = colour_npg["raw"], 
+             data = filter(df_auroc_coef, !type_interact)) + 
+  geom_pointrange(aes(ymin = lower, ymax = upper, y = coef), 
+                  position = position_dodge(width = .35), shape = 18) +
+  scale_colour_manual(values = colour_npg, guide = FALSE) + 
+  # coord_flip() +
+  # facet_wrap(type_label~., scales = "free_x") + 
+  # # coord_flip() +
+  theme_bw() + 
+  xlab("Model coefficient") + 
+  ylab("Coefficient estimate (0.95 conf. int.)") + 
+  theme(aspect.ratio = 1, #strip.text.y = element_text(angle = 90), 
+        axis.text.x = element_text(colour = "black"), 
+        axis.text.y = element_text(colour = "black"))  + 
+  gg_main
+
+# shuffle points, otherwise z is on top
+g4 <- df_mod %>% 
+  mutate(ord = runif(nrow(.)), 
+         method = factor(method, levels = c("random", "pagerank", param$list_methods))) %>% 
+  arrange(ord) %>%
+  ggplot(aes(x = path_var_ref, y = auroc, colour = method, 
+             group = method, fill = method)) + 
+  geom_vline(xintercept = 0, colour = "gray50", lty = 2) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"),
+              se = TRUE, alpha = .3) +
+  # to remove transparencies set alpha = 1, uncomment the next line 
+  # and comment the one afterwards
+  # scale_fill_manual(values = scales::col2hcl(colour_npg, l = 90), guide = FALSE) + 
+  scale_fill_manual(values = colour_npg, guide = FALSE) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), 
+              size = 2, colour = "white", se = FALSE) + 
+  geom_smooth(method = "glm", method.args = list(family = "quasibinomial"), 
+              se = FALSE) +
+  scale_colour_manual(values = colour_npg, name = "Method") + 
+  # scale_fill_manual(values = colour_npg, name = "Method", guide = FALSE) + 
+  theme_bw() + 
+  xlab(vbias_text_pathway) + 
+  ylab("Pathway AUROC") + 
+  theme(aspect.ratio = 1, 
+        legend.justification = c(0, 0), 
+        legend.position = c(0, 0), 
+        legend.title = element_text(size = 7), 
+        legend.text = element_text(size = 6.5),
+        legend.margin = margin(t = 1.5, r = 1.5, b = 1.5, l = 1.5, unit = "mm"), 
+        legend.box.background = element_rect(colour = "gray20"), 
+        legend.key.size = unit(1.5, "pt")) + 
+  gg_main
+
+g.a <- (g1 + ggtitle("A")) %>% 
+  ggplotGrob # add a column for missing legend
+g.b <- (g2 + ggtitle("B")) %>% 
+  ggplotGrob  # add a column for missing legend
+g.c <- (g3 + ggtitle("C")) %>% 
+  ggplotGrob  
+g.d <- (g4 + ggtitle("D")) %>% 
+  ggplotGrob 
+
+#   gtable_add_rows(unit(0, "mm"))
+g.composite <- rbind(
+  cbind(g.a, g.b, size = "first"), # stack the two plots
+  cbind(g.c, g.d, size = "first"), # stack the two plots
+  size = "first"
+)
+
+# save as pdf and svg
+grDevices::pdf(paste0(param$dir_main, "/main_retrodata.pdf"), 
+               width = 17/2.54, height = 17/2.54, family = font)
+grid::grid.draw(g.composite)
+grDevices::dev.off()
+
+grDevices::setEPS()
+grDevices::postscript(paste0(param$dir_main, "/main_retrodata.eps"), 
+                      width = 17/2.54, height = 17/2.54, family = font)
+grid::grid.draw(g.composite)
+grDevices::dev.off()
+
+grDevices::svg(paste0(param$dir_main, "/main_retrodata.svg"), 
+               width = 17/2.54, height = 17/2.54, family = font)
+grid::grid.draw(g.composite)
+grDevices::dev.off()
+```
+
+
+\clearpage
+
+# Reproducibility
+
+```{r}
+capture.output(sessionInfo()) %T>% 
+  writeLines(con = paste0(param$dir_metadata, "/10_sessionInfo.txt"))
+```
+
+\clearpage
+
+# References

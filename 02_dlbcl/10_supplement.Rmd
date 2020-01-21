@@ -1,0 +1,543 @@
+---
+title: "Supplement 3: DLBCL dataset"
+author: 
+  - "Sergio Picart-Armada"
+  - "Wesley K. Thompson"
+  - "Alfonso Buil"
+  - "Alexandre Perera-Lluna"
+date: "October 15, 2018"
+bibliography: "10_bibliography.bib"
+output: bookdown::pdf_document2
+---
+
+```{r, echo = FALSE}
+# Hide the code, suppress messages and warnings
+# otherwise document gets too long
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                      fig.height = 3, fig.align = 'center')
+```
+
+\clearpage
+
+# Introduction
+
+This additional file contains details on the DLBCL dataset, the human proteome and the synthetic signals generated on it. 
+This document can be re-built anytime by knitting its corresponding `.Rmd` file.
+
+```{r}
+# requires knitr and bookdown
+
+# nets
+library(igraph)
+
+# manipulation
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(magrittr)
+
+# models
+library(emmeans)
+library(stargazer)
+
+# plotting
+library(ggplot2)
+library(ggsci)
+library(grid)
+library(gtable)
+library(grDevices)
+library(extrafont)
+
+library(data.table)
+library(xtable)
+
+extrafont::loadfonts(quiet = TRUE)
+
+param <- new.env()
+source("params.R", local = param)
+
+source("../helper_funs.R")
+
+gg_def <- theme_bw() + theme(aspect.ratio = 1)
+
+# Network
+load(param$file_graph)
+
+# Graph kernel
+load(param$file_kernel)
+
+# Models data frame
+load(paste0(param$dir_models, "/df_mod.RData")) 
+df_mod %<>% 
+  mutate(strat = factor(param$list_strat_plot[as.character(strat)], 
+                        levels = param$list_strat_plot))
+```
+
+
+## The network
+
+We used the HPRD network [@hprd] as used in the DLBCL package [@dlbcl_package], which provides a case study for the BioNet R package [@bionet].
+Below is a summary of the network, obtained by taking the largest connected component from the original network `interactome`:
+
+```{r}
+summary(g_cc)
+```
+
+The network contained $`r format(vcount(g_cc))`$ nodes and $`r format(ecount(g_cc))`$ edges and was connected by construction. 
+The edges were unweighted, as they had a constant, unitary weight:
+
+```{r}
+summary(E(g_cc)$weight)
+```
+
+# Descriptive statistics
+
+## Simulated signals
+
+Signals to benchmark the diffusion scores were obtained by sub-sampling the Kyoto Encyclopedia of Genes and Genomes (KEGG) pathways [@kegg2017], using the release: 
+
+```{r}
+g_cc$info %>% head(4)
+```
+
+Pathways were used like gene sets, without taking further network data from the KEGG database.
+After mapping the pathways to the network, their size followed the distribution in figure \@ref(fig:hist-genes).
+Only pathways with a minimum of $N_{min} = `r param$N_min`$ genes were considered.
+
+```{r}
+df_pathways <- g_cc$kegg_mapped %>% 
+  group_by(pathway) %>% 
+  summarise(N = n())
+```
+
+```{r hist-genes, fig.cap='Histogram with number of pathways involving each gene'}
+ggplot(df_pathways, aes(x = N)) + 
+  geom_histogram(bins = 50) + 
+  xlab("Number of genes in the pathway") + 
+  ylab("Number of pathways") + 
+  gg_def
+```
+
+Likewise, figure \@ref(fig:hist-paths) depicts the amount of pathways in which each gene participates. 
+Although some genes are ubiquitous, most of them belong to less than $10$ pathways.
+
+```{r}
+df_genecount <- g_cc$kegg_mapped %>% 
+  group_by(gene) %>% 
+  summarise(N = n())
+```
+
+```{r hist-paths, fig.cap='Histogram with number of genes in each pathway'}
+ggplot(df_genecount, aes(x = N)) + 
+  geom_histogram(bins = 50) + 
+  xlab("Number of pathways involving the gene") + 
+  ylab("Number of genes") + 
+  gg_def
+```
+
+## Sub-sampling
+
+The sub-sampling was governed by three key parameters: the number of affected pathways $k \in \{`r param$k`\}$, the proportion of differentially expressed genes $r \in \{`r param$r`\}$ and the maximum p-value for differential expression, $p_{max} \in \{`r param$pmax`\}$. 
+The extreme values $k = `r tail(param$k, 1)`$ and $p_{max} = `r tail(param$pmax, 1)`$ led to redundant results and were left out of the main analyses.
+
+As described in the main body, in each run $k$ pathways were uniformly sampled and their genes were tagged as positives. 
+A proportion of $r$ positives was uniformly sampled to show differential expression, with their p-values uniformly sampled in $[0, p_{max}]$. 
+The remaining proportion of $1-r$ genes were not differentially expressed, imposed by sampling their p-values uniformly in $[0,1]$. 
+For each combination of parameters, a total of $N = `r param$n_trials`$ repetitions were generated. 
+Regardless of which nodes were considered as _unlabelled_ or _labelled_, the p-values were generated for all the nodes in the network.
+
+## Array-based backgrounds
+
+In order to evaluate the effect of the statistical background, genes from the network were partitioned by __observability__ into _labelled_ and _unlabelled_.
+_Labelled_ nodes were defined as those belonging to an array, whereas _unlabelled_ nodes were those outside it. 
+Two arrays were used: the _ALL_ array [@all_array], obtained from the ALL R package [@all_package], and the _Lym_ array [@lym_array] from the DLBCL package [@dlbcl_package].
+Gene identifiers in _ALL_ were mapped to the network through `BioNet::mapByVar()` from the BioNet package [@bionet], whereas those of _Lym_ were already mapped in the data package.
+Each array had its own _labelled_ and _unlabelled_ genes: figure \@ref(fig:bar-counts) represents the amount of genes within each background and their belonging to the KEGG pathways.
+
+```{r}
+list_kegg <- g_cc$kegg_mapped$gene %>% unique %>% sort
+
+df_genes <- tibble(
+  id = V(g_cc)$geneID, kegg = id %in% list_kegg, 
+  ALL = V(g_cc)$obs_all, Lym = V(g_cc)$obs_lym
+)
+
+df_background <- gather(df_genes, "array", "obs", ALL, Lym) %>% 
+  mutate(array = factor(array, levels = names(param$list_arrays)), 
+         kegg_label = ifelse(kegg, "Pathways", "Other genes"), 
+         obs_label = factor(ifelse(obs, "Labelled", "Unlabelled"), 
+                            levels = c("Labelled", "Unlabelled")))
+```
+
+```{r bar-counts, fig.cap='Number of genes inside and outside pathways, stratified by observability and array'}
+ggplot(df_background, aes(x = obs_label, fill = kegg)) + 
+  geom_bar(stat = "count", position = "dodge") + 
+  facet_wrap(~array) +
+  scale_fill_manual(values = colour_simpson, name = "From KEGG") + 
+  xlab("Gene partition (inside our outside array)") + 
+  ylab("Gene count") + 
+  gg_def
+```
+
+The exact numbers are found in the following snippet, which also includes the proportion of KEGG pathways that could be observed in both arrays. 
+The size of _ALL_ exceeded that of _Lym_ by more than two-fold and was therefore expected to outperform it.
+
+```{r}
+df_background_summary <- group_by(df_background, array) %>% 
+  summarise(n_labelled = sum(obs), n_unlabelled = sum(!obs), 
+            n_labelled_kegg = sum(kegg*obs), n_unlabelled_kegg = sum(kegg*!obs), 
+            prop_labelled_kegg = n_labelled_kegg/sum(kegg))
+
+as.data.frame(df_background_summary)
+```
+
+Finally, we show the overlap between the KEGG pathways and the _obs_ and _Lym_ arrays. 
+The table below counts the number of genes lying in the intersections.
+Most of the genes of the smaller array _Lym_ are part of _ALL_ as well.
+
+```{r}
+df_genes %>% select("kegg", "ALL", "Lym") %>% as.matrix %>% crossprod
+```
+
+## Theoretical bias in diffusion scores
+
+As exposed in the main body, the diffusion scores are expected to be biased in terms of their expected value for each node under input permutations. 
+According to the definitions therein, the expected value of a node $i$ is proportional to its reference expected value $b_{\mu}^{\mathcal{K}}(i)$.
+Figure \@ref(fig:bar-bias) depicts this magnitude, stratified by pathway membership, observability and array.
+
+```{r}
+g_cc_rename <- g_cc %>% 
+  set_vertex_attr("name", value = V(.)$geneID)
+df_bias <- group_by(df_background, array) %>% 
+  mutate(bias = get_ebias(K[, obs])[id], 
+         Uniform = page.rank(g_cc_rename)$vector[id], 
+         Personalized = page.rank(g_cc_rename, personalized = id %in% id[obs])$vector[id])
+```
+
+```{r bar-bias, fig.height=4, fig.cap='Expected values inside and outside pathways, stratified by observability and array'}
+ggplot(df_bias, aes(x = kegg_label, y = bias, fill = kegg)) + 
+  geom_boxplot(outlier.size = .5) + 
+  facet_grid(array~obs_label) + 
+  coord_fixed() + 
+  scale_fill_manual(values = colour_simpson, name = "From KEGG", guide = FALSE) + 
+  xlab("Genes") + 
+  ylab(ebias_text) + 
+  gg_def + 
+  theme(strip.text.y = element_text(angle = 0), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+The following claims were statistically significant in both arrays (Wilcoxon rank-sum test): 
+
+1. In the _labelled_ genes, pathway genes had a __lower__ reference expected value than non-pathway genes.
+2. In the _unlabelled_ genes, pathway genes had a __higher__ reference expected value than non-pathway genes.
+3. _Labelled_ genes had a __higher__ reference expected value than _unlabelled_ genes.
+
+Claims $1$ and $2$:
+
+```{r}
+group_by(df_bias, obs_label, array) %>% 
+  summarise(
+    difference_medians = median(bias[kegg]) - median(bias[!kegg]), 
+    pvalue_wilcox = wilcox.test(x = bias[kegg], y = bias[!kegg])$p.value) %>% 
+  mutate(fdr = p.adjust(pvalue_wilcox, method = "fdr")) %>% 
+  as.data.frame
+```
+
+Claim $3$:
+
+```{r}
+group_by(df_bias, array) %>% 
+  summarise(
+    difference_median_bias = median(bias[obs]) - median(bias[!obs]), 
+    pvalue_wilcox = wilcox.test(x = bias[obs], y = bias[!obs])$p.value) %>% 
+  mutate(fdr = p.adjust(pvalue_wilcox, method = "fdr")) %>% 
+  as.data.frame
+```
+
+As every pathway gene was a potential positive, in general terms `raw` should benefit from the bias in (2) and `z` from that in (1). 
+As for _overall_ performance (3), `z` equalises _labelled_ and _unlabelled_ nodes, mixing high and low-confidence predictions. 
+Reliable predictions from the _labelled_ part should be masked by those in the _unlabelled_ part and the _overall_ performance is expected to decrease. 
+
+An important difference exists between indirect bias measurements and the direct quantification of $b_{\mu}^{\mathcal{K}}$.
+The claims above would be different if PageRank was used as a measure of centrality, under the hypothesis that the bias favours central genes.
+Figure \@ref(fig:bar-pagerank) depicts the PageRank scores (`damping = 0.85`) of all the genes, organised into: both arrays, inside and outside KEGG pathways, labelled and unlabelled nodes. 
+Two PageRank flavours are included: (i) uniform prior and (ii) personalised prior, starting at the labelled genes of each array.
+In both alternatives, this point of view suggests that `raw` should outperform `z` in the three scenarios, implying that claim (1) would reverse and (2) and (3) would hold.
+
+```{r bar-pagerank, fig.height=4, fig.cap='PageRank centralities inside and outside pathways, stratified by observability and array'}
+df_bias_pr <- gather(df_bias, "Prior", "pagerank", Uniform, Personalized) %>% 
+  mutate(Prior = paste0(Prior, " PageRank"))
+
+ggplot(df_bias_pr, aes(x = obs_label, y = pagerank, fill = kegg)) + 
+  scale_y_log10() + 
+  geom_boxplot(outlier.size = .5) + 
+  facet_grid(array~Prior) + 
+  coord_fixed() + 
+  scale_fill_manual(values = colour_simpson, name = "From KEGG") + 
+  xlab("Observability of nodes") + 
+  ylab("PageRank") + 
+  gg_def + 
+  theme(strip.text.y = element_text(angle = 0))
+```
+
+Genes inside pathways have significantly higher PageRank scores than those outside, in each one of the eight combinations in figure \@ref(fig:bar-pagerank):
+
+```{r}
+group_by(df_bias_pr, obs_label, array, Prior) %>% 
+  summarise(
+    difference_medians = median(pagerank[kegg]) - median(pagerank[!kegg]), 
+    pvalue_wilcox = wilcox.test(x = pagerank[kegg], y = pagerank[!kegg])$p.value) %>% 
+  mutate(fdr = p.adjust(pvalue_wilcox, method = "fdr")) %>% 
+  as.data.frame
+```
+
+## Diffusion inputs
+
+In order to binarise the labels for the diffusion, the false discovery rate, or FDR [@fdr], of the _labelled_ nodes was computed.
+_Labelled_ nodes were defined as positive if their FDR was below `r param$threshold_fdr` and negative otherwise. 
+Nodes from the _unlabelled_ pool were naturally deemed unlabelled for the diffusion process. 
+
+Note that the input could contain false positives due to false positives in hypothesis testing.
+Likewise, false negatives were expected by the definition of the signal, because only a portion of the genes of the affected pathways will show changes. 
+Occasionally, especially in weak signals (low $r$, $k$ and high $p_{max}$), none of the _labelled_ genes would be significant at the specified FDR. 
+Along with other degenerate cases (i.e. no positives in the _unlabelled_ nodes), these instances were discarded. 
+
+A summary of the metrics table illustrates how the number of instances increased with increasing $r$, $k$ and decreasing $p_{max}$:
+
+```{r}
+summary(df_mod)
+```
+
+For methods requiring permutations, the number of permutations was set to `r param$n.perm` for computational reasons.
+In all cases, the regularised (unnormalised) Laplacian kernel was used.
+
+# Models
+
+## Model definition
+
+The performance of the diffusion scores in the two arrays under the three signal parameters was best described through explanatory models. 
+Positives in validation were defined as the union of the $k$ pathways that generated each signal. 
+AUROC and AUPRC were computed in three ways: in all the nodes (_overall_), only in the _labelled_ part and only in the _unlabelled_ part.
+
+Three reference methods were kept. 
+First, `original` ranked the nodes according to their p-value before computing the FDR. 
+In the _labelled_ genes, this quantifies the added value of the diffusion process beyond the original signal, i.e. does the diffusion improve the findings obtained by prioritising the genes by their p-value? 
+Regarding the _unlabelled_ genes, `original` serves as a reference, as diffusion ignored such p-values by design was not expected to outperform them, especially if $r$ was high or $p_{max}$ was small.
+Diffusion performance was compared to a hypothetical case in which we knew the original signal -- although in general an imperfect one, with false positives and false negatives. 
+
+The remaining baselines were `pagerank`, a centrality measure that ignored every input and suggested central genes as top candidates, and `random`, a uniformly random re-ordering of the genes. 
+
+The metrics AUROC and AUPRC were modelled through dispersion-adjusted quasibinomial logit models, see `?stats::quasibinomial` in an R console:
+
+$$ \textrm{metric} \sim \textrm{method} + \textrm{method:strat} + \textrm{array} + 
+k + r + p_{max}  $$
+
+All the variables were treated as categorical. 
+The interaction term `method:strat` ensured that methods were allowed to have differential performance in the _labelled_, _unlabelled_ and _overall_ node stratifications. 
+The values $p_{max} = `r tail(param$pmax, 1)`$ and $k = `r tail(param$k, 1)`$ were left out due to their respective similarity to $p_{max} = `r head(tail(param$pmax, 2), 1)`$ and $k = `r head(tail(param$k, 2), 1)`$.
+Each model is described in its own section.
+
+## AUROC
+
+```{r, results='asis'}
+mod_auroc <- glm(
+  auroc ~ method + method:strat + k + r + pmax + array, 
+  data = filter(df_mod, pmax != "1e-05" & k != "10"), 
+  family = quasibinomial(link = "logit"))
+
+stargazer::stargazer(
+  mod_auroc, ci = TRUE, ci.level = 0.95, header = FALSE, 
+  single.row = TRUE, omit.table.layout = "mdl",  label = "tab:mod-auroc", 
+  title = "Quasilogistic model for AUROC", star.cutoffs = param$star.cutoffs)
+```
+
+In this instance, AUROC did not stand out as the ideal metric -- details on its model can be found in table \@ref(tab:mod-auroc).
+
+One reason is that, although significant differences existed between methods among _labelled_, _unlabelled_ and all nodes, such differences always happened in a narrow range. 
+
+More importantly, the performances of diffusion scores (except the ones diffusing $-1$ on the negatives, `ml` and `gm`) were comparable to the `original` p-values in the _unlabelled_ genes. 
+The fact that diffusion-based method had no prior data on the _unlabelled_ genes should hinder their performance within them, compared to (i) the _labelled_ fold, and especially (ii) to the original, unobserved p-values, more notably if $r$ was large.
+This was not the case, as depicted in figure \@ref(fig:pred-auroc), with predictions by array and partition.
+
+```{r}
+df_auroc <- emmeans(
+  mod_auroc, specs = c("method", "strat", "array"), 
+  type = "response", nesting = NULL) %>% summary
+```
+
+```{r pred-auroc, fig.height=6, fig.cap='Predictions using the AUROC model (0.95 confidence intervals). Predictions were averaged over the other categorical covariates.'}
+ggplot(df_auroc, aes(x = method, colour = method)) + 
+  geom_hline(yintercept = 0.5, lty = 3, color = "gray45") +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = .3, position = "dodge") + 
+  facet_grid(array~strat, drop = TRUE) + 
+  scale_colour_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("Method") + 
+  ylab("Predicted mean AUROC") + 
+  theme(aspect.ratio = 1, strip.text.y = element_text(angle = 0), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, colour = "black"), 
+        axis.text.y = element_text(colour = "black")) 
+```
+
+## AUPRC
+
+Contrary to AUROC, AUPRC (see table \@ref(tab:mod-auprc)) was more informative for this task.
+
+```{r, results='asis'}
+mod_auprc <- glm(
+  auprc ~ method + method:strat + k + r + pmax + array, 
+  data = filter(df_mod, pmax != "1e-05" & k != "10"), 
+  family = quasibinomial(link = "logit"))
+
+stargazer::stargazer(
+  mod_auprc, ci = TRUE, ci.level = 0.95, header = FALSE, 
+  single.row = TRUE, omit.table.layout = "mdl", label = "tab:mod-auprc", 
+  title = "Quasilogistic model for AUPRC", star.cutoffs = param$star.cutoffs)
+```
+
+The quasibinomial model confirmed expected phenomena regarding performance, such as the positive influence of increasing $k$ and $r$ and decreasing $p_{max}$ and the superiority of the _ALL_ array.
+Contrary to AUROC, performance of diffusion scores suffered a pronounced drop in the _unlabelled_ genes. 
+Therefore, there was a notable gap in terms of early retrieval between both, something not that apparent from AUROC alone.
+
+```{r}
+emm_auprc <- emmeans(
+  mod_auprc, specs = c("method", "strat", "array"), 
+  type = "response", nesting = NULL) 
+df_auprc <- summary(emm_auprc)
+```
+
+```{r pred-auprc, fig.height=6, fig.cap='Predictions using the AUPRC model (0.95 confidence intervals). Predictions were averaged over the other categorical covariates.'}
+ggplot(df_auprc, aes(x = method, colour = method)) + 
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = .3, position = "dodge") + 
+  facet_grid(array~strat, drop = TRUE) + 
+  scale_colour_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("Method") + 
+  ylab("Predicted mean AUPRC") + 
+  theme(aspect.ratio = 1, strip.text.y = element_text(angle = 0), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, colour = "black"), 
+        axis.text.y = element_text(colour = "black"))
+```
+
+Figure \@ref(fig:pred-auprc) shows the expected behaviour of the diffusion scores (actual values in Table \@ref(tab:ci-auprc)), in terms of the aforementioned reference expected value $b_{\mu}^{\mathcal{K}}$. 
+As anticipated, `raw` outperformed `z` in the _unlabelled_ nodes and _overall_, whereas `z` outperformed `raw` in the _labelled_ nodes. 
+
+```{r, results='asis'}
+df_auprc %>% 
+  mutate(col_ci = paste0(
+      "(", format(asymp.LCL, digits = 0, nsmall = 3), 
+      ", ", format(asymp.UCL, digits = 0, nsmall = 3), 
+      ")")) %>% 
+  data.table::setDT() %>% 
+  data.table::dcast(
+  array + method ~ strat, 
+  value.var = "col_ci") %>% 
+  xtable::xtable(
+    caption = "Confidence intervals (0.95) on predicted AUPRC, averaged over covariates.", 
+    label = "tab:ci-auprc") %>% 
+  print(include.rownames = FALSE, comment = FALSE)
+```
+
+\clearpage
+Below are the results of the statistical test between `raw` and `z` that back up the claims in this section.
+
+```{r}
+contrast_auprc <- emmeans::contrast(emm_auprc, method = "pairwise")
+
+# pvalues are adjusted using Tukey's method
+contrast_auprc %>% 
+  as.data.frame %>% 
+  filter(grepl("raw.+z", contrast)) %>% 
+  filter(grepl("(Labelled.+Labelled)|(Unlabelled.+Unlabelled)|(Overall.+Overall)", contrast)) %>%
+  filter(grepl("(Lym.+Lym)|(ALL.+ALL)", contrast)) %>%
+  select(contrast, odds.ratio, p.value)
+```
+
+
+## Other remarks
+
+* Using an indirect measure of bias might be misleading. 
+Here, by using PageRank as a centrality measure and assuming that `raw` scores will favour highly connected nodes, we would expect that `raw` outperforms `z` in the _labelled_ nodes. 
+However, this is inded the opposite to what $b_{\mu}^{\mathcal{K}}$ (a direct quantification of the expected value-related bias) suggests and to what we observe in terms of performance.
+* The `original` baseline was difficult to improve upon, even in the _labelled_ genes, in terms of AUPRC. 
+This was not the case for AUROC, implying that although diffusion had a positive and noticeable impact in the overall ranking, early retrieval was a challenging task.
+* `ber_p` had the best _overall_ performance, suggesting that a consensus between normalised and unnormalised scores can be beneficial. 
+* `ml` and `gm` suffered from this imbalanced datasets, where positives were vastly outnumbered by negatives. 
+* Within normalised scores, `z` outperformed `mc`, possibly due to the presence of ties and the stochastic nature of the latter.
+
+\clearpage
+
+```{r, results='hide'}
+# Plot for the main body
+# Left: modified version of bias plot
+font <- "Arial"
+gg_main <- theme(text = element_text(size = 7.5, family = font))
+
+
+gg_left <- ggplot(df_bias, aes(x = kegg_label, y = bias, fill = kegg)) + 
+  geom_boxplot(size = .2, outlier.size = .1, width = .5) + 
+  facet_grid(array~obs_label) + 
+  coord_fixed() + 
+  scale_fill_manual(values = colour_simpson, name = "From KEGG", guide = FALSE) + 
+  xlab("Genes") + 
+  ylab(ebias_text) + 
+  gg_def + 
+  theme(strip.text.y = element_blank(), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, colour = "black"), 
+        axis.text.y = element_text(colour = "black")) + 
+  gg_main
+
+# modified version of auprc prediction plot
+gg_right <- df_auprc %>% 
+  ggplot(aes(x = method, colour = method)) + 
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = .6, position = "dodge") + 
+  facet_grid(array~strat, drop = TRUE) + 
+  scale_colour_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("Method") + 
+  ylab("Predicted mean AUPRC") + 
+  theme(aspect.ratio = 1, strip.text.y = element_text(angle = 0), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, colour = "black"), 
+        axis.text.y = element_text(colour = "black")) + 
+  gg_main
+
+# Subplots A and B
+gl <- (gg_left + ggtitle("A")) %>% 
+  ggplotGrob %>% 
+  gtable_add_cols(unit(0, "mm")) # add a column for missing legend
+gr <- (gg_right + ggtitle("B")) %>% 
+  ggplotGrob %>% 
+  gtable_add_cols(unit(0, "mm")) # add a column for missing legend
+
+g_composite <- cbind(gl, gr, size = "first") # stack the two plots
+
+# save as pdf and svg
+grDevices::pdf(paste0(param$dir_main, "/main_bias_auprc.pdf"), 
+               width = 17/2.54, height = 8.5/2.54, family = font)
+grid::grid.draw(g_composite)
+grDevices::dev.off()
+
+grDevices::setEPS()
+grDevices::postscript(paste0(param$dir_main, "/main_bias_auprc.eps"), 
+                      width = 17/2.54, height = 8.5/2.54, family = font)
+grid::grid.draw(g_composite)
+grDevices::dev.off()
+
+grDevices::svg(paste0(param$dir_main, "/main_bias_auprc.svg"), 
+               width = 17/2.54, height = 8.5/2.54, family = font)
+grid::grid.draw(g_composite)
+grDevices::dev.off()
+```
+
+
+# Reproducibility
+
+```{r}
+capture.output(sessionInfo()) %T>% 
+  writeLines(con = paste0(param$dir_metadata, "/09_sessionInfo.txt"))
+```
+
+\clearpage
+
+# References

@@ -1,0 +1,159 @@
+---
+title: "Statistics on the diffusion scores"
+author: "Sergio Picart-Armada"
+date: "September 14, 2017"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+library(plyr)
+library(magrittr)
+library(diffuStats)
+
+source("params.R")
+
+# the training data is mat.old
+# validation is mat.new
+vars <- load(file_dataset)
+
+parts <- load(file_partitions)
+stopifnot(all(c("partition.genes", "partition.paths") %in% parts))
+
+files_scores <- list.files(path = dir_scores)
+```
+
+# Preprocess pathway partitions
+
+```{r}
+# this assumes that each partition is exclusive
+df_paths <- as.data.frame(partition.paths) 
+df_paths$pathway <- rownames(df_paths)
+
+# include data about the size of the pathways
+df_size <- data.frame(
+  size_old = colSums(mat.old), 
+  size_new = colSums(mat.new), 
+  size_novelgenes = colSums((1 - mat.old)*mat.new)
+)
+df_size$pathway <- rownames(df_size)
+
+df_paths <- plyr::join(df_paths, df_size, by = "pathway")
+```
+
+
+# Compute the AUCs stratified by genes
+
+```{r}
+# Metrics
+f_auroc <- metric_fun(curve = "ROC")
+f_auprc <- metric_fun(curve = "PRC")
+
+plyr::l_ply(
+  files_scores, 
+  function(bkgd) {
+    # load the scores
+    scores <- load(paste0(dir_scores, "/", bkgd))
+    stopifnot("list_diff" %in% scores)
+    
+    bkgd_name <- gsub("(.+)(\\.RData$)", "\\1", bkgd)
+    
+    # part A: data frame with metrics (one row per pathway and method)
+    df_auc <- plyr::ldply(
+      list_diff, 
+      function(mat_scores) {
+        # iterate over the gene partitions
+        plyr::ldply(
+          partition.genes, 
+          function(partition) {
+            # each pathway can have a different partition.. 
+            # thus we cannot use perf_eval from diffuStats
+            # browser()
+            plyr::ldply(
+              names(partition), 
+              function(pathway) {
+                # browser()
+                id_genes <- partition[[pathway]]
+                actual <- mat.new[id_genes, pathway]*1
+                predicted <- mat_scores[id_genes, pathway]
+                
+                if (sum(actual) > 0) {
+                  data.frame(
+                    pathway = pathway, 
+                    auroc = f_auroc(actual, predicted), 
+                    auprc = f_auprc(actual, predicted)
+                  )  
+                } else {
+                  NULL
+                }
+              }
+            )
+          }, 
+          .id = "partition"
+        )
+      }, 
+      .id = "method", 
+      .progress = "text"
+    ) %>% plyr::join(df_paths, by = "pathway")
+    
+    save(df_auc, file = paste0(dir_stats, "/auc_", bkgd), compress = "xz")
+    
+    # part B: stats at the (positive) gene level
+    df_rank <- plyr::ldply(
+      list_diff, 
+      function(mat_scores) {
+        # iterate over the gene partitions
+        plyr::ldply(
+          partition.genes, 
+          function(partition) {
+            # each pathway can have a different partition.. 
+            # thus we cannot use perf_eval from diffuStats
+            # browser()
+            plyr::ldply(
+              names(partition), 
+              function(pathway) {
+                # browser()
+                id_genes <- partition[[pathway]]
+                
+                geneids <- rownames(mat.new)[id_genes]
+                actual <- mat.new[id_genes, pathway]*1L
+                predicted <- mat_scores[id_genes, pathway]
+                
+                rank_predicted <- rank(-predicted)/length(predicted)
+                
+                if (sum(actual) > 0) {
+                  index_actual <- actual == 1L
+                  data.frame(
+                    pathway = pathway, 
+                    id_positive = geneids[index_actual], 
+                    rank_positive = rank_predicted[index_actual]
+                  )  
+                } else {
+                  NULL
+                }
+              }
+            )
+          }, 
+          .id = "partition"
+        )
+      }, 
+      .id = "method", 
+      .progress = "text"
+    ) %>% plyr::join(df_paths, by = "pathway")
+    
+    save(df_rank, file = paste0(dir_stats, "/ranking_", bkgd), compress = "xz")
+  }
+)
+```
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/03_sessionInfo.txt"))
+```
+

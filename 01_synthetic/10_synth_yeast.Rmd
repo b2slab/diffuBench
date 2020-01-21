@@ -1,0 +1,692 @@
+---
+title: "Supplement 2: synthetic signals on a yeast interactome"
+author: 
+  - "Sergio Picart-Armada"
+  - "Wesley K. Thompson"
+  - "Alfonso Buil"
+  - "Alexandre Perera-Lluna"
+date: "October 30, 2018"
+bibliography: "10_bibliography.bib"
+output: bookdown::pdf_document2
+---
+
+```{r setup, include=FALSE}
+# Hide the code, suppress messages and warnings
+# otherwise document gets too long
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                      fig.height = 3, fig.align = 'center')
+```
+
+\clearpage
+
+# Introduction
+
+This additional file contains details on the synthetic signals generated on a yeast interactome, both in biased and unbiased ways.
+Using a controlled environment, we characterised the behaviour of the diffusion scores to derive guidelines in terms of two key factors: the presence of bias in the positives and the class imbalance. 
+This document can be re-built anytime by knitting its corresponding `.Rmd` file.
+
+```{r}
+library(igraph)
+library(igraphdata)
+library(diffuStats)
+
+library(magrittr)
+library(reshape2)
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+library(ggsci)
+library(GGally)
+library(grid)
+library(gtable)
+library(grDevices)
+library(extrafont)
+
+library(data.table)
+library(xtable)
+
+extrafont::loadfonts(quiet = TRUE)
+
+# from igraphdata
+data(yeast)
+g <- largest_cc(yeast)
+
+param <- new.env()
+source("params.R", local = param)
+
+source("../helper_funs.R")
+
+list.methods <- c("raw", "ml", "gm", "ber_s", "ber_p", "mc", "z")
+list.methodsplot <- c(list.methods, "pagerank", "random")
+
+source("aux_generate_input.R") # generate_input4()
+```
+
+## The network
+
+The yeast interactome was originally published in [@von2002yeast] and downloaded using the `igraphdata` R package [@igraphdata]. 
+Only the largest connected component was used, which consisted of $`r vcount(g)`$ nodes and $`r ecount(g)`$ edges. 
+A summary of the network is provided below:
+
+```{r}
+summary(g)
+```
+
+## Synthetic signal generation
+
+```{r}
+n <- vcount(g)
+K <- diffuStats::regularisedLaplacianKernel(g)
+
+set.seed(1)
+V(g)$class <- rep(
+  c("target", "labelled", "filler"), 
+  times = c(floor(n/3), floor(n/3), round(n - 2*floor(n/3))) 
+) %>% sample
+
+list.newpartition <- c(labelled = "Labelled", target = "Target", filler = "Filler")
+V(g)$classname <- list.newpartition[V(g)$class]
+
+id_target <- as.numeric(V(g)[classname == "Target"])
+id_labelled <- as.numeric(V(g)[classname == "Labelled"])
+id_filler <- as.numeric(V(g)[classname == "Filler"])
+```
+
+Biased and unbiased signals were generated in order to compare normalised and unnormalised diffusion scores. 
+As shown in the diffusion scores properties in Supplement 1, if all the nodes are labelled and the regularised unnormalised Laplacian kernel is used, then the expected values of the null distribution are constant for all the nodes in the network. 
+In order to have differences in expected values (and therefore noticeable biases), nodes were randomly divided in three classes:  
+
+* Labelled nodes: the labelled nodes in the input 
+* Target nodes: the unlabelled nodes that had to be prioritised 
+* Filler nodes: the rest of unlabelled nodes 
+
+The presence of filler and target nodes, considered as unlabelled in the diffusion inputs, promoted differences in the expected values of all nodes. 
+Each class contained around one third of the nodes:
+
+```{r}
+table(V(g)$classname)
+```
+
+```{r}
+# define the signal
+prop_in <- .1
+reps <- 100
+n_labelled <- length(id_labelled)
+n_in <- floor(prop_in*n_labelled)
+```
+
+The purpose was to sample $n_{labelled}$ nodes from the labelled nodes and $n_{target}$ nodes from the target nodes in each instance. 
+The sampled nodes were deemed positives, whereas the rest were negatives. 
+Diffusion scores were fed with the labelled nodes in order to prioritise the target nodes, on which the performance metrics were computed. 
+
+### Biased sampling
+
+First, the $n_{labelled}$ nodes were uniformly sampled from the labelled nodes, giving a binary input vector $y$.
+Then, the raw scores were computed: $f_{raw} = Ky$. 
+Exactly $n_{target}$ nodes were sampled, where the probability of the $i$-th node was proportional to $f_{raw}(i)$.
+This sampling scheme was biased because, by hypothesis, nodes with higher expected value would become positives more frequently. 
+
+### Unbiased sampling
+
+Like in the biased sampling, the $n_{labelled}$ nodes were uniformly sampled to obtain the binary input vector $y$.
+The $n_{target}$ nodes were sampled with a probability proportional to $f_{mc}(i) + \frac{1}{N+1}$, where $N = `r param$n.perm`$ is the number of simulations. 
+$f_{mc}(i)$ was (roughly) their empirical cumulative distribution function applied to the scores $f_{raw} = Ky$, which removed the bias by its own definition. 
+
+# Descriptive statistics
+
+## Expected value and covariance matrices
+
+```{r}
+# mean and var are the same for all q as they have the same number of positives
+q_mean <- n_in/n_labelled
+
+# added the *nl/(nl - 1) to match the main body
+q_var <- q_mean*(1 - q_mean)*n_labelled/(n_labelled - 1)
+
+# double check
+q_dummy <- rep(0:1, times = c(n_labelled - n_in, n_in))
+stopifnot(all(
+  assertthat::are_equal(q_mean, mean(q_dummy)), 
+  assertthat::are_equal(q_var, var(q_dummy))
+))
+
+# null distribution moments
+Kq <- K[, id_labelled]
+
+# mean
+mu <- get_mu(Kq, mu_y = q_mean)[id_target]
+
+# covariance
+covar_raw <- get_covar(Kq, q_var) 
+
+# summary of network properties
+df.nodes <- data.frame(
+  name = V(g)$name,
+  class = V(g)$classname, 
+  degree = degree(g), 
+  bias = get_ebias(Kq),
+  var = diag(covar_raw), 
+  page.rank = page.rank(g)$vector
+)
+```
+
+After defining the node classes and the basic input parameters, we computed the theoretical mean vector and covariance matrix. 
+The fact that the number of positives in the input was constant in these simulations led to fixed $\mu_y$ and $\sigma_y^2$ values, allowing a single representation of the expected values and variances of the null distributions in figure \@ref(fig:e-var-degree).
+The figure confirms that _labelled_ nodes exhibited properties different that those of _filler_ and _target_ nodes: _labelled_ nodes had higher expected values, variances, and different trends between expected value, variance, and degree.
+Likewise, _filler_ and _target_ nodes were undistinguishable, expected by their definition.
+
+```{r e-var-degree, fig.cap='Expected value, variance and node degree in every node category. Loess fit in black, shaded with 0.95 confidence interval. Note how the effect of node degree on its expected value had opposed directions in labelled and unlabelled nodes. Differences were also present in the magnitude of expected values, variances, and their trend.'}
+ggplot(df.nodes, aes(x = bias, y = var, colour = log10(degree))) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "loess", colour = "gray20") + 
+  scale_y_log10() + 
+  scale_colour_distiller(palette = "Spectral") + 
+  facet_wrap(~class) + 
+  xlab("Expected value") + 
+  ylab("Variance") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+```
+
+Figure \@ref(fig:hist-bias) offers a closer look at differences in reference mean values the _target_ nodes, which is a property of the network. 
+The _target_ nodes were of special interest because predictions and performance metrics were computed on them.
+
+```{r hist-bias, fig.cap='Histogram of the reference expected value of the target nodes. '}
+ggplot(filter(df.nodes, class == "Target"), aes(x = bias)) + 
+  geom_histogram(bins = 40) + 
+  xlab(ebias_text) + 
+  ylab("Number of nodes") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+```
+
+
+## Input lists
+
+A total of $`r reps`$ biased and $`r reps`$ unbiased instances were generated, each with a proportion of $`r prop_in`$ labelled nodes and a proportion of $`r prop_in`$ target nodes with positive labels. 
+To generate the unbiased inputs, `mc` scores were computed by permuting $`r param$n.perm`$ times.
+The regularised (unnormalised) Laplacian kernel was used. 
+
+```{r}
+list.input.raw <- lapply(
+  list("Unbiased" = FALSE, "Biased" = TRUE), 
+  function(bias, ...) generate_input(sampling_bias = bias, ...), 
+  graph = g, 
+  K = K, 
+  reps = reps,
+  prop_target = prop_in, 
+  prop_input = prop_in, 
+  seed = 1, 
+  n.perm = param$n.perm
+) 
+list.input <- list(
+  mat_input = cbind(list.input.raw$Biased$mat_input, 
+                    list.input.raw$Unbiased$mat_input), 
+  mat_target = cbind(list.input.raw$Biased$mat_target, 
+                     list.input.raw$Unbiased$mat_target)
+)
+df.case <- tibble(
+  case = colnames(list.input$mat_input), 
+  biased = gsub("\\d+", "", case)
+)
+```
+
+
+The frequency of target nodes and the reference expected value were expected to be uncorrelated in the unbiased signals, whilst positively correlated in the biased case. 
+By definition, the input nodes should be independent from the reference expected value as well. 
+Figure \@ref(fig:corr-bias) supports all the claims above. 
+
+
+```{r corr-bias, fig.height=5, fig.cap='Frequency of positive nodes among the targeted nodes, as a function of the node reference expected value. Gray lines correspond to linear models with a 0.95 confidence interval.'}
+# how frequent are the targets? and the inputs?
+df.target <- plyr::ldply(
+  list.input.raw, 
+  function(input) {
+    data.frame(
+      name = V(g)[id_target]$name, 
+      Target = rowSums(input$mat_target), 
+      Labelled = rowSums(input$mat_input)
+    )
+  }, .id = "biased") %>% 
+  join(df.nodes, type = "left") %>% 
+  gather("nodeclass", "freq", Target, Labelled)
+
+ggplot(df.target, aes(x = bias, y = freq)) + 
+  geom_smooth(color = "gray50", method = "lm") + 
+  geom_point(size = .5) + 
+  facet_grid(nodeclass~biased) + 
+  xlab(ebias_text) + 
+  ylab("Frequency of node") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+
+```
+
+```{r}
+# Compute scores
+# Takes around 10-15min
+if(sd(colSums(list.input$mat_input)) > 0) {
+  stop("Inputs with different number of seed nodes")
+}
+
+# Scores implemented in diffuStats
+list.scores <- plyr::llply(
+  setNames(list.methods, list.methods), 
+  function(m) {
+    # take only the scores of the target nodes
+    diffuStats::diffuse(method = m, scores = list.input$mat_input, 
+                        K = K, n.perm = param$n.perm)[id_target, ]
+  }, 
+  .progress = "none"
+)
+
+set.seed(4)
+list.scores$random <- apply(list.scores$raw, 2, function(col) rnorm(length(col)))
+dimnames(list.scores$random) <- dimnames(list.scores$raw)
+
+list.scores$pagerank <- replicate(n = ncol(list.scores$raw), df.nodes$page.rank[id_target])
+dimnames(list.scores$pagerank) <- dimnames(list.scores$raw)
+```
+
+```{r}
+vars.join <- c("name", "case")
+df.input <- reshape2::melt(
+      list.input$mat_target, varnames = vars.join,
+      value.name = "target") %>% 
+  join(df.case)
+
+# node-level stats
+df.rank <- plyr::ldply(list.scores, function(sc) {
+  rk <- apply(-sc, 2, rank)/nrow(sc)
+  
+  df.rk <- reshape2::melt(rk, varnames = vars.join, value.name = "rank")
+  df.sc <- reshape2::melt(sc, varnames = vars.join, value.name = "score")
+  
+  df.rk %>% join(df.sc, by = vars.join) #
+  }, .id = "method") %>% 
+  join(df.nodes, by = "name") %>% 
+  join(df.input, by = c("name", "case"))
+  
+# case-level stats
+df.perf <- plyr::ldply(
+  list.scores, 
+  function(sc) {
+    perf_eval(
+      prediction = sc, validation = list.input$mat_target, 
+      metric = list(AUROC = metric_fun(curve = "ROC"), 
+                    AUPRC = metric_fun(curve = "PRC")))
+  }, 
+  .id = "method") %>%
+  rename(case = Column) %>% 
+  join(df.case)
+```
+
+## Diffusion scores
+
+$`r param$n.perm`$ permutations were used to compute `mc` and `ber_p` scores.
+Figure \@ref(fig:pairs-rankings) compares the rankings from each method, stratified by positives and negatives, and shows their correlation. 
+This suggests groups of methods with similar behaviours: (i) `ml` and `gm`, or (ii) `ber_p`, `mc` and `z`.
+Also, top ranked `raw` nodes were usually top ranked in `z`, but the converse was not true. 
+
+```{r pairs-rankings, dev='png', dpi=600, fig.height=7, fig.cap='Pairs plot between the rankings by each diffusion score (and baseline). Top-ranked nodes are closer to 0. Positives and negatives are represented in orange and gray. The color legend has an adjusted transparency that corrects the fact that negatives greatly outnumbered positives.'}
+df.pairs <- select(df.rank, biased, case, name, method, rank, target) %>% 
+  reshape2::dcast(biased + case + name + target ~ method, value.var = "rank") 
+
+# helper function to add correlations 
+panel.cor <- function(x, y, digits = 2, prefix = "Pearson cor\n95% CI: ", cex.cor, ...) {
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r <- cor.test(x, y, method = "pearson")
+  txt <- format(r$conf.int, digits = digits, nsmall = 2)
+  txt <- paste0(prefix, "\n(", txt[1], ",", txt[2], ")")
+  if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+  text(0.5, 0.5, txt, cex = cex.cor)
+}
+
+# big pairs plot
+pairs(
+  select(df.pairs, raw:z, -ber_s), 
+  pch = ".", cex = 1, asp = 1, 
+  col = ifelse(df.pairs$target == 1L, 
+               alpha(colour_jama["Positive"], 1 - prop_in), 
+               alpha(colour_jama["Negative"], prop_in)), 
+  lower.panel = panel.cor
+)
+```
+
+Figure \@ref(fig:corr-rankings) depicts the correlations between methods. 
+First, this shows how `ber_s` is equivalent to `raw` in terms of ranking, as proven in the properties in Supplement 1.
+`raw` correlates with normalised scores `mc` and `z`, the hybrid `ber_p` and `pagerank`. 
+On the other hand, `pagerank` strongly anticorrelates with `ml` and `gm` (`raw` does as well, but only slightly). 
+The scores `ml` and `gm` diffuse $-1$ on the negatives, which outnumber the positives 9 to 1 and dominate them. 
+The nodes are expected to be ranked roughly by the (negative) reference expected value, also correlated with `pagerank`.
+This is supported by the strong anticorrelation between the node ranking (`ml`, `gm`) and `pagerank`.  
+
+```{r}
+mat.rank <- reshape2::acast(df.rank, biased + name + case ~ method, value.var = "score")
+cor.rank <- cor(mat.rank, method = "spearman")
+fdr.rank <- corrplot::cor.mtest(mat.rank, method = "spearman")$p %>% 
+  p.adjust(method = "fdr") %>% 
+  matrix(nrow = nrow(cor.rank))
+```
+
+```{r corr-rankings, fig.height=4.5, fig.cap='Spearman correlation between node rankings for all the diffusion scores and baselines. Crossed correlations had false discovery rates larger than 0.05.'}
+corrplot::corrplot(
+  cor.rank, 
+  p.mat = fdr.rank, type = "lower", sig.level = .05, 
+  method = "ellipse", tl.col = "black")
+```
+
+
+```{r}
+# top-k overlap
+top.k <- 10
+df.topk <- plyr::llply(
+  list.scores, 
+  function(sc) {
+    apply(sc, 2, function(col) head(order(col, decreasing = TRUE), top.k))
+  }
+) 
+
+# how many common hits are in the top k?
+df.overlap <- plyr::adply(
+  expand.grid(met1 = names(df.topk), 
+              met2 = names(df.topk), 
+              stringsAsFactors = FALSE), 
+  1, 
+  function(met) {
+    # browser()
+    met1 <- df.topk[[met$met1]]
+    met2 <- df.topk[[met$met2]]
+    
+    common <- sapply(
+      seq_len(ncol(met1)), 
+      function(case) length(intersect(met1[, case], met2[, case])))
+    mean_common <- mean(common)
+    
+    data.frame(
+      mean_common = mean_common, 
+      text = format(mean_common, digits = 2, nsmall = 2))
+  }
+) %>% mutate(met1 = factor(met1, list.methodsplot), 
+             met2 = factor(met2, list.methodsplot))
+```
+
+Figure \@ref(fig:top-hits) depicts the concordance between the top `r top.k` ranked nodes under each diffusion score.
+This scenario is slightly different from that in figure \@ref(fig:corr-rankings) and suggests that methods with highest similarity are (i) `raw` and `ber_p`, (ii) `ml` and `gm`, (iii) `mc` and `z`.
+
+
+```{r top-hits, fig.height=4.5, fig.cap='Common hits within the top 10 suggestions of all methods.'}  
+ggplot(df.overlap, aes(x = met1, y = met2, label = text, fill = mean_common)) + 
+  geom_raster() + 
+  geom_text(size = 3) + 
+  scale_fill_distiller(palette = "Spectral", name = paste0("Common proteins\n in top ", top.k, " (mean)")) + 
+  coord_fixed() + 
+  xlab("Method") + 
+  ylab("Method") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+## Bias within prioritisations
+
+Our main hypothesis on the fundamental impact of normalising the scores (`mc`, `z` versus `raw`) was that normalisation attained a more uniform power across the nodes of the network. 
+In other words, unnormalised scores kept a higher power on a certain kind of nodes, driven by the reference expected value $b_{\mu}^{\mathcal{K}}$ in the null distribution.
+Figure \@ref(fig:bias-methods) illustrates this behaviour, present in biased and unbiased signals: positives with high $b_{\mu}^{\mathcal{K}}$ were top ranked by `raw`, at the expenses of missing positives with low $b_{\mu}^{\mathcal{K}}$.
+However, the overall impact on performance was not obviously derived from figure \@ref(fig:bias-methods) alone, because we needed to account for the density of true positives across the reference expected value (i.e. ``are the positive nodes biased?''), as shown in figure \@ref(fig:corr-bias).
+
+Other remarks from figure \@ref(fig:bias-methods): `ber_p` behaves halfway between `raw` and `mc`; and `ml` is biased in the other direction, that is, favouring nodes with a low reference expected value. 
+The latter relates with the prior observations on how `ml` anticorrelates with `pagerank` because it diffuses $-1$ on the negatives, which outnumber the positives. 
+Figure \@ref(fig:bias-methods) casts doubt on the peformance of `ml` because the mean ranking of positives and negatives is qualitatively indistinguishable at the low reference expected value region, where `ml` should excel.
+
+```{r bias-methods, fig.height=4, fig.width=7, dev='png', dpi=600, fig.cap='Ranking of the positives and negatives within the target nodes as a function of their reference expected value, divided by method and signal bias. Best rankings are those close to 0. The smoothing was fitted using the default gam method in ggplot2. For visual and computational purposes, only a fraction of 0.1 of the negatives were represented.'}
+set.seed(1)
+df.rank %>% 
+  filter(!(method %in% c("ber_s", "pagerank", "random"))) %>% 
+  filter(target | runif(nrow(.)) < .1) %>% 
+  mutate(istarget = ifelse(target == 0L, "Negative", "Positive")) %>% 
+  ggplot(aes(x = bias, y = rank, color = istarget, fill = istarget)) +  
+  geom_point(size = .1, alpha = .5) + 
+  geom_smooth(size = 2, colour = "white") + 
+  geom_smooth() + 
+  facet_grid(biased~method) + 
+  scale_colour_manual(values = colour_jama, name = "Node type") +
+  scale_fill_manual(values = colour_jama, name = "Node type") +
+  xlab(ebias_text) + 
+  ylab("Rank (lower is beter)") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "bottom", 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1), 
+        text = element_text(size = 8))
+```
+
+
+# Performance
+
+## Aditive model
+
+The AUROC and AUPRC were computed for each diffusion score and input, with its corresponding simulated ground truth (figure \@ref(fig:auc-boxplots)). 
+Each box contained $`r reps`$ data points. 
+Differences were described in terms of the following additive quasibinomial (logit link) model, summarised in table \@ref(tab:mod-roc):
+
+$$ \textrm{performance} \sim \textrm{method} + \textrm{method:biased} + \textrm{metric} $$
+Provided that AUROC and AUPRC showed similar trends (figure \@ref(fig:auc-boxplots)) and that both range between 0 and 1, they were combined and modelled with the `metric` categorical covariate. 
+`biased` referred to the nature of the signal, biased or unbiased. 
+
+```{r auc-boxplots, fig.height=5, fig.cap='AUROC and AUPRC of diffusion scores for biased and unbiased signals.'}
+df.mod <- gather(df.perf, "metric", "performance", AUROC, AUPRC)
+
+ggplot(df.mod, aes(x = method, y = performance, fill = method)) +
+  geom_boxplot() + 
+  facet_grid(metric~biased, scales = "free_y") + 
+  scale_fill_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("Method") + 
+  ylab("Performance") + 
+  theme(aspect.ratio = 1, 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+```{r, results='asis'}
+mod <- glm(performance ~ method + method:biased + metric, 
+           data = filter(df.mod, method != "ber_s"), 
+           family = quasibinomial(link = "logit"))
+
+# summary(mod)
+
+stargazer::stargazer(
+  mod, ci = TRUE, ci.level = 0.95, header = FALSE, 
+  single.row = TRUE, omit.table.layout = "mdl",  label = "tab:mod-roc", 
+  title = "Quasibinomial model for AUROC and AUPRC. Estimates with 0.95 confidence intervals. ", 
+  star.cutoffs = param$star.cutoffs)
+```
+
+Figure \@ref(fig:auc-boxplots) suggests that the unnormalised scores `raw` were preferrable if the signal was biased, whereas `mc` and `z` were best suited for unbiased signals. 
+Likewise, the hybrid scores `ber_p` standed out as a good compromise between both. 
+
+```{r}
+emm.mod <- emmeans::emmeans(mod, specs = c("method"), by = c("biased", "metric"))
+```
+
+Table \@ref(tab:ci-auc) contains confidence intervals on the predictions of the model for each combination of factors.
+
+```{r, results='asis'}
+ci <- 0.95
+emm.tab <- summary(emm.mod, type = "response", level = ci) %>% 
+  select(metric, method, biased, asymp.LCL, asymp.UCL) %>% 
+  rename(Metric = metric, Method = method, Bias_signal = biased, 
+         Lower = asymp.LCL, Upper = asymp.UCL)
+
+emm.tab %>% 
+  mutate(col_ci = paste0(
+      "(", format(Lower, digits = 0, nsmall = 3), 
+      ", ", format(Upper, digits = 0, nsmall = 3), 
+      ")")) %>%
+  data.table::setDT() %>% 
+  data.table::dcast(
+    Bias_signal + Method ~ Metric, 
+    value.var = "col_ci") %>%
+  xtable::xtable(
+    caption = "Confidence intervals (0.95) on predicted AUROC and AUPRC.", 
+    label = "tab:ci-auc") %>% 
+  print(include.rownames = FALSE, comment = FALSE)
+```
+
+We tested for differences between the predictions of `raw` and `z` in the four cases using Tukey's method, confirming that the differences discussed above were statistically significant:
+
+```{r}
+emm.contrast <- emmeans::contrast(emm.mod, method = "pairwise")
+
+# pvalues are adjusted using Tukey's method
+emm.contrast %>% 
+  as.data.frame %>% 
+  filter(grepl(".+raw.+z", contrast)) %>% 
+  filter(grepl("(Biased.+Biased.+)|(Unbiased.+Unbiased.+)", contrast))
+```
+
+Another interesting remark from figure \@ref(fig:auc-boxplots): `pagerank` had predictive power only in the biased setup. 
+The predictive power of an input-naive centrality measure like `pagerank` can be a reason to suspect that the signal is biased towards high-degree nodes.
+
+```{r}
+emm.contrast %>% 
+  as.data.frame %>% 
+  filter(grepl(".+random.+pagerank", contrast)) %>% 
+  filter(grepl("(Biased.+Biased.+)|(Unbiased.+Unbiased.+)", contrast))
+```
+
+## Correlation between method performances
+
+Finally, we examined the similarities between diffusion scores at the performance level. 
+Figure \@ref(fig:auc-corr) shows the Spearman correlation between the performance metrics of the diffusion scores. 
+Small differences were observed between AUROC and AUPRC: `ml` and `gm` correlated with `raw` with AUPRC but not with AUROC. 
+In general, all the proper diffusion scores tended to correlate, even more than we observed in figure \@ref(fig:corr-rankings). 
+
+```{r auc-corr, fig.height=7, fig.width=7, fig.cap='Spearman correlation between performance metrics of diffusion scores and baselines. Correlations not significant at $p<0.05$ after multiple testing were crossed out.'}
+par(mfrow = c(2, 2))
+
+df.perf %>% gather("metric", "value", AUROC, AUPRC) %>% 
+  plyr::d_ply(c("biased", "metric"), function(df) {
+    main <- paste0(df$metric[1], ", ", df$biased[1], " signal")
+    mat <- spread(data = df, method, value) 
+    
+    mat.perf <- select(mat, raw:pagerank)
+    cor.perf <- cor(mat.perf, method = "spearman")
+    fdr.perf <- corrplot::cor.mtest(mat.perf, method = "spearman")$p %>% 
+      p.adjust(method = "fdr") %>% 
+      matrix(nrow = nrow(cor.perf))
+    
+    corrplot::corrplot(
+      cor.perf, main = main, mar = margin(0, 0, 1.5, 0, unit = "cm"), 
+      p.mat = fdr.perf, type = "lower", sig.level = .05, 
+      method = "ellipse", tl.col = "black")
+  })
+```
+
+\clearpage
+
+# Conclusions
+
+The main findings from this proof of concept: 
+
+* Our definitions of biased and unbiased signals seemed consistent: unbiased signals were uncorrelated with the reference expected value, whereas biaseds ones showed a positive correlation.
+* Changing the labels for diffusion (e.g. `ml` versus `raw`) and normalising the scores had a noticeable impact on the prioritisations and their performance. 
+* `mc` and `z` had a similar behaviour. This was expected, as they are the parametric and non-parametric alternatives for normalising. 
+* The adequateness of normalising lied on the distribution of positives across the reference expected value $b_{\mu}^{\mathcal{K}}$. 
+Biased signals favoured `raw` by definition, whereas `mc` and `z` were preferrable on unbiased signals. 
+Even within a hypothetical case study without overall performance differences, `raw` and `z`/`mc` would be expected to behave differently.
+* Class imbalance backfired in `ml` and `gm`, as the properties of the negatives overshadowed those of the positives. 
+A hypothetical case where positives outnumbered negatives might cause a similar effect `raw` as well.
+* The complementarity of `raw` and `mc` leaves `ber_p` as a good compromise between both. 
+
+\clearpage
+
+```{r, results='hide'}
+# Plot for the main body
+# Left: modified version of bias plot
+# (had to adjust the position of the titles through their margins
+# so that I could place the legend at the top and A and B would remain aligned;
+# now it works, I don't know why but the numbers add up)
+font <- "Arial"
+gg_main <- theme(text = element_text(size = 7.5, family = font))
+
+set.seed(1)
+gg_left <- df.rank %>% 
+  filter(method %in% c("raw", "ml", "z")) %>% 
+  filter(target | runif(nrow(.)) < .1) %>% 
+  mutate(istarget = ifelse(target == 0L, "Negative", "Positive"), 
+         rand = runif(nrow(.))) %>% 
+  arrange(rand) %>%
+  ggplot(aes(x = bias, y = rank, color = istarget, fill = istarget)) +  
+  geom_point(size = .01, alpha = 1) + 
+  geom_smooth(size = 1, colour = "white") + 
+  geom_smooth(size = .5) + 
+  facet_grid(biased~method) + 
+  scale_colour_manual(values = colour_jama, name = "Node type") +
+  scale_fill_manual(values = colour_jama, name = "Node type") +
+  xlab(ebias_text) + 
+  ylab("Rank (lower is beter)") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "top", 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1), 
+        legend.key.width = unit(10, "pt"), 
+        legend.key.height = unit(10, "pt"), 
+        legend.margin = margin(0, 0, -5.5, 0), 
+        plot.title = element_text(margin = margin(b = -(12-5), unit = "pt"))) + 
+  gg_main
+
+# modified version of auprc prediction plot
+gg_right <- ggplot(df.mod, aes(x = method, y = performance, fill = method)) +
+  geom_boxplot(size = .2, outlier.size = .1, width = .75) + 
+  facet_grid(metric~biased, scales = "free_y") + 
+  scale_fill_manual(values = colour_npg, guide = FALSE) + 
+  theme_bw() + 
+  xlab("") + 
+  # ylab("Performance") +
+  theme(aspect.ratio = 1, 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1), 
+        legend.text = element_text(size = 7.5), 
+        plot.title = element_text(margin = margin(b = 0, unit = "pt"))) + 
+  gg_main
+
+# Subplots A and B
+gl <- (gg_left + ggtitle("A")) %>% 
+  ggplotGrob# %>% 
+ # gtable_add_cols(unit(0, "mm")) # add a column for missing legend
+gr <- (gg_right + ggtitle("B")) %>% 
+  ggplotGrob %>% 
+  gtable_add_rows(unit(0, "mm"), pos = 1) %>% 
+  gtable_add_rows(unit(0, "mm"), pos = 1) # add a column for missing legend
+
+g_composite <- cbind(gl, gr, size = "first") # stack the two plots
+
+grDevices::png(paste0(param$dir_main, "/main_bias_yeast.png"), res = 600, 
+               width = 17/2.54, height = 8.25/2.54, units = "in", family = font)
+grid::grid.draw(g_composite)
+grDevices::dev.off()
+
+# save as pdf and svg
+grDevices::pdf(paste0(param$dir_main, "/main_bias_yeast.pdf"), 
+               width = 17/2.54, height = 9/2.54, family = font)
+grid::grid.draw(g_composite)
+grDevices::dev.off()
+
+grDevices::setEPS()
+grDevices::postscript(paste0(param$dir_main, "/main_bias_yeast.eps"), 
+                      width = 17/2.54, height = 9/2.54, family = font)
+grid::grid.draw(g_composite)
+grDevices::dev.off()
+```
+
+\clearpage
+
+# Metadata
+
+```{r}
+date()
+sessionInfo()
+```
+
+# References

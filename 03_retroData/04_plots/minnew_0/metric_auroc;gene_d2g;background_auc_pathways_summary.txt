@@ -1,0 +1,36 @@
+
+Call:
+glm(formula = paste0(metric, "~ method + method:Biased"), family = quasibinomial(link = "logit"), 
+    data = df_mod)
+
+Deviance Residuals: 
+    Min       1Q   Median       3Q      Max  
+-1.2681  -0.2470  -0.0033   0.2776   1.3087  
+
+Coefficients:
+                            Estimate Std. Error t value Pr(>|t|)    
+(Intercept)                9.097e-02  9.165e-02   0.993   0.3212    
+methodber_s               -2.962e-15  1.296e-01   0.000   1.0000    
+methodber_p                5.291e-01  1.327e-01   3.986 7.32e-05 ***
+methodmc                   6.418e-01  1.340e-01   4.789 2.00e-06 ***
+methodz                    5.442e-01  1.329e-01   4.096 4.64e-05 ***
+methodpagerank            -7.045e-01  1.327e-01  -5.311 1.42e-07 ***
+methodrandom               1.659e-01  1.301e-01   1.276   0.2024    
+methodraw:BiasedTRUE       1.150e+00  2.193e-01   5.242 2.04e-07 ***
+methodber_s:BiasedTRUE     1.150e+00  2.193e-01   5.242 2.04e-07 ***
+methodber_p:BiasedTRUE     4.094e-01  2.117e-01   1.933   0.0536 .  
+methodmc:BiasedTRUE       -2.041e-01  1.979e-01  -1.031   0.3028    
+methodz:BiasedTRUE        -4.377e-01  1.928e-01  -2.271   0.0234 *  
+methodpagerank:BiasedTRUE  1.524e+00  2.073e-01   7.353 4.82e-13 ***
+methodrandom:BiasedTRUE   -1.698e-01  1.903e-01  -0.892   0.3725    
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+(Dispersion parameter for quasibinomial family taken to be 0.1865145)
+
+    Null deviance: 209.99  on 811  degrees of freedom
+Residual deviance: 166.78  on 798  degrees of freedom
+AIC: NA
+
+Number of Fisher Scoring iterations: 4
+

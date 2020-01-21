@@ -1,0 +1,350 @@
+---
+title: "Plotting metrics"
+author: "Sergio Picart-Armada"
+date: "September 14, 2017"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r, message=FALSE}
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(ggsci)
+
+source("params.R")
+source("../helper_funs.R")
+
+# the training data is mat.old
+# validation is mat.new
+files_stats <- list.files(path = dir_stats, pattern = "*auc*")
+```
+
+# Compute the AUCs stratified by genes
+
+```{r}
+plyr::l_ply(
+  files_stats, 
+  function(bkgd) {
+    # load the scores
+    aucs <- load(paste0(dir_stats, "/", bkgd))
+    stopifnot("df_auc" %in% aucs)
+    
+    bkgd_name <- gsub("(.+)(\\.RData$)", "\\1", bkgd)
+    
+    ##### PLOTS by PATHWAY PARTITION #####
+    # sweep filtering options
+    # pathways are filtered based on a minimum amount of
+    # new genes
+    plyr::l_ply(
+      filter_pathways, 
+      function(threshold_newgenes) {
+        # directory with filtered pathways
+        dir_filtered <- paste0(dir_plots, "/minnew_", 
+                               threshold_newgenes)
+        dir.create(dir_filtered)
+            
+        df_plot <- subset(df_auc, size_novelgenes >= threshold_newgenes)
+        n_paths <- length(unique(df_plot$pathway))
+        
+        ##### MODELS by GENE PARTITION #####
+        # df_mod <- subset(df_auc, size_novelgenes >= threshold_newgenes)
+        df_mod <- df_plot
+        df_plot$normalised <- ifelse(
+          df_plot$method %in% c("ber_p", "mc", "z"), "true", "false") %>% 
+          as.factor
+  
+        # Models using all the methods
+        plyr::l_ply(
+          levels(df_mod$partition), 
+          function(gene_partition) {
+            df_mod <- dplyr::filter_(
+              df_plot, 
+              "partition == gene_partition & !(method %in% c('ml', 'gm'))")
+            plyr::l_ply(
+              c("auroc", "auprc"), 
+              function(metric) {
+                options(max.print = 2000, width = 1000)
+                out_prefix <- paste0(
+                  dir_filtered, "/metric_", metric, 
+                  ";gene_", gene_partition, ";background_", 
+                  bkgd_name
+                )
+                
+                mod_logistic <- glm(
+                  paste0(metric, "~ method + method:Biased"), 
+                  data = df_mod, 
+                  family = quasibinomial(link = "logit"))
+                
+                # anova(mod_logistic) 
+                writeLines(
+                  capture.output(summary(mod_logistic)), 
+                  con = paste0(out_prefix, "_summary.txt")
+                )
+                
+                # compute contrasts between methods
+                mod_glht <- multcomp::glht(mod_logistic)
+                  # linfct = multcomp::mcp(method = "Tukey"))
+                mod_confint <- summary(mod_glht)
+                
+                writeLines(
+                  capture.output(print(mod_confint)), 
+                  con = paste0(out_prefix, "_contrast.txt")
+                )
+              }
+            )
+          }
+        )
+      }
+    )
+  }, 
+  .progress = "text"
+)
+```
+
+# In-depth analysis on raw vs z
+
+## Descriptive stats
+
+```{r}
+# load metrics
+list_df <- load("01_data/props_dataframes.RData")
+
+# load rankings
+list_rk <- load("03_statistics/ranking_all.RData")
+
+g <- ggplot(df_bias_path, aes(x = n_new)) + 
+  geom_bar() + 
+  xlab("Number of new genes") + 
+  ylab("Pathway count") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_plots, "/newgenes_histogram.png"), 
+       width = 5, height = 5, units = "in")
+```
+
+## Ranking of individual genes: raw versus z
+
+```{r}
+df_rank_plot <- dplyr::filter(df_rank, method %in% c("raw", "z") & partition == "d1g")
+summary(df_rank_plot)
+```
+
+
+
+```{r}
+df_rank_plotpos <- join(df_rank_plot, 
+                        mutate(df_props_genes, id_positive = id))
+g <- ggplot(df_rank_plotpos, 
+            aes(x = Var_bias, y = rank_positive, colour = id_positive)) + 
+  geom_smooth(colour = "gray40") + 
+  geom_point(size = .5) + 
+  facet_wrap(~method) + 
+  scale_colour_discrete(guide = FALSE) + 
+  xlab(vbias_text) + 
+  ylab("Ranking of true positive (lower is better)") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_plots, "/bias_bymethod_bygene.png"), 
+       width = 8.5, height = 5, units = "in")
+```
+
+## Star plot: how each gene is prioritised by method and bias
+
+```{r}
+g <- ggplot(arrange(df_rank_plotpos, rank_positive), 
+            aes(x = Var_bias, y = rank_positive, colour = method)) + 
+  # geom_smooth(method = "glm", method.args = list(family = "quasibinomial")) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "loess") + 
+  scale_colour_discrete() + 
+  theme_bw() + 
+  xlab(vbias_text) + 
+  ylab("Ranking of true positive (lower is better)") + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_plots, "/bias_bymethod.png"), 
+       width = 5.5, height = 5, units = "in")
+```
+
+```{r}
+# quantiles for the number of new genes in pathways 
+# (to have cuts as even as possible...)
+q_nnew <- quantile(df_rank_plot$size_novelgenes, (0:10)/10) %>% 
+  floor %>% unique 
+
+g <- ggplot(
+  mutate(df_rank_plot, 
+         range = cut(size_novelgenes, breaks = q_nnew, include.lowest = TRUE)), 
+  aes(x = range, y = rank_positive, fill = method)) + 
+  geom_boxplot() + 
+  xlab("Number of new genes") + 
+  ylab("Rank of positive genes (lower is better)") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_plots, "/rank_bynewgenes.png"), 
+       width = 5.5, height = 5, units = "in")
+```
+
+```{r}
+# df_rank_plotall <- mutate(df_rank_plot, pathway_ord = reorder(pathway, rank_positive))
+# order of the factors, sort paths by the median ranking difference 
+# between raw and z
+path_sorted <- group_by(df_rank_plot, pathway, method) %>% 
+  summarise(median_rank = median(rank_positive)) %>% 
+  group_by(pathway) %>% 
+  summarise(median_diff_rank = median_rank[method == "raw"] - median_rank[method == "z"]) %>% 
+  join(df_bias_path) %>% 
+  arrange(median_new) 
+
+g <- ggplot(path_sorted, aes(x = median_diff_rank, y = median_diff)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") + 
+  xlab("Difference in median ranks of positives (raw - z)") + 
+  ylab("Difference in median sd of positives and negatives") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_plots, "/rank_vs_bias.png"), 
+       width = 5.5, height = 5, units = "in")
+```
+
+```{r}
+g <- ggplot(
+  mutate(df_rank_plot, 
+         pathway_ord = factor(pathway, levels = path_sorted$pathway)), 
+  aes(x = pathway_ord, y = rank_positive, fill = method)) + 
+  geom_boxplot() + 
+  xlab("Pathway (sorted by ascending median of the standard deviation of positives)") + 
+  ylab("Rank of positives (lower is better)") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+ggsave(g, file = paste0(dir_plots, "/rank_bypathway.png"), 
+       width = 25, height = 3, units = "in")
+```
+
+
+# Main models
+
+```{r}
+# Load all the metrics
+load("03_statistics/auc_all.RData")
+
+df_mod <- filter(
+  df_auc,
+  partition %in% c("d1g") &
+    size_novelgenes >= 1 &
+    !(method %in% c("ml", "gm", "ber_s"))) %>%
+  mutate(Biased = as.factor(Biased), 
+         Biased_ng5 = size_novelgenes >= 5, 
+         Bias_lognew = log(size_novelgenes)) %>% 
+  join(select(df_bias_path, pathway, median_new)) %>% 
+  mutate(median_rk = scale(median_new))
+df_mod$normalised <- ifelse(
+  df_mod$method %in% c("ber_p", "mc", "z"), "true", "false") %>%
+  as.factor
+
+summary(df_mod)
+```
+
+## AUROC using the bias as regressor
+
+```{r}
+# Models using all the methods
+# the bias is just a scaled version of the log of the std dev
+mod_auroc <- glm(
+  auroc ~ method + method:median_rk,
+  data = df_mod,
+  family = quasibinomial(link = "logit"))
+
+summary(mod_auroc)
+# anova(mod_logistic)
+
+# compute contrasts between methods
+glht_auroc <- multcomp::glht(
+  mod_auroc)
+emmeans::emmeans(
+  mod_auroc, specs = "method", 
+  type = "response", nesting = NULL)
+
+  # linfct = multcomp::mcp(method = "Tukey"))
+confint_auroc <- summary(glht_auroc)
+confint_auroc
+```
+
+## AUROC using the number of new genes as regressor
+
+```{r}
+# This model conveys a similar message but weaker, 
+# as the division at n_new <= 5 correlates with the bias 
+# although being a weaker indicator
+mod_auroc_n <- glm(
+  auroc ~ method + method:Biased_ng5,
+  data = df_mod,
+  family = quasibinomial(link = "logit"))
+
+summary(mod_auroc_n)
+
+glht_auroc_n <- multcomp::glht(
+  mod_auroc_n)
+emmeans::emmeans(
+  mod_auroc_n, specs = "method", by = "Biased_ng5", 
+  type = "response", nesting = NULL)
+
+  # linfct = multcomp::mcp(method = "Tukey"))
+confint_auroc_n <- summary(glht_auroc_n)
+confint_auroc_n
+```
+
+## AUPRC using the bias as regressor
+
+```{r}
+# same idea.. but as the auprc is strict and the dataset is 
+# imbalanced, the model is not that conclusive anymore
+mod_auprc <- glm(
+  auprc ~ method + method:median_rk,
+  data = df_mod,
+  family = quasibinomial(link = "logit"))
+
+summary(mod_auprc)
+
+# compute contrasts between methods
+glht_auprc <- multcomp::glht(
+  mod_auprc)
+emmeans::emmeans(
+  mod_auprc, specs = "method", 
+  type = "response", nesting = NULL)
+
+  # linfct = multcomp::mcp(method = "Tukey"))
+confint_auprc <- summary(glht_auprc)
+confint_auprc
+```
+
+```{r}
+# Model comparing normalised to non-normalised scores
+# mod_logistic <- glm(
+#   auprc ~ normalised*TopologyBias, 
+#   data = df_mod, 
+#   family = quasibinomial(link = "logit"))
+# 
+# summary(mod_logistic)
+# anova(mod_logistic)
+
+# compute contrasts between methods
+# mod_glht <- multcomp::glht(
+#   mod_logistic)
+#   # linfct = multcomp::mcp(method = "Tukey"))
+# mod_confint <- summary(mod_glht)
+# mod_confint
+```
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/04_sessionInfo.txt"))
+```
+

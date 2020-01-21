@@ -1,0 +1,532 @@
+---
+title: "Descriptive statistics"
+author: "Sergio Picart-Armada"
+date: "September 14, 2017"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+library(igraph)
+library(plyr)
+library(magrittr)
+
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+
+# the dataset is already preprocessed in the retroData package
+library(retroData)
+data("biogrid2011")
+data("kegg2011")
+data("kegg2018")
+
+source("../helper_funs.R")
+
+library(doParallel)
+nodes <- parallel::detectCores()
+cl <- parallel::makeCluster(nodes)
+doParallel::registerDoParallel(cl)
+# parallelMap::parallelStartMulticore()
+# doMC::registerDoMC(cores = 4)
+source("params.R")
+```
+
+# Build the dataset and the graph kernel
+
+```{r}
+set.seed(1)
+
+# gene ids
+id_all <- V(biogrid2011)$name
+stopifnot(length(id_all) == length(unique(id_all)))
+
+# pathways in matrix format
+mat.old <- sapply(
+  kegg2011, 
+  function(pathway) (id_all %in% pathway)
+) %>% set_rownames(id_all)
+  
+mat.new <- sapply(
+  kegg2018, 
+  function(pathway) (id_all %in% pathway)
+) %>% set_rownames(id_all)
+
+g.network <- biogrid2011
+
+# Save data to compute scores
+if (!file.exists(file_dataset)) {
+  save(g.network, mat.old, mat.new, 
+       file = file_dataset, compress = "xz")
+}
+
+# Compute and save kernel, if it does not exist
+if (!file.exists(file_kernel)) {
+  K <- diffuStats::regularisedLaplacianKernel(g.network)
+  
+  save(K, file = file_kernel, compress = "xz")
+  rm(K)
+  gc()
+}
+```
+
+# Build gene partitions to compute stratified AUC
+
+```{r}
+# general params
+list.paths <- colnames(mat.old)
+list.genes <- rownames(mat.old)
+n.paths <- length(list.paths)
+n.genes <- length(list.genes)
+
+# Check the network
+stopifnot(!is.directed(g.network))
+stopifnot(is.connected(g.network))
+stopifnot(is.simple(g.network))
+
+message("Computing centralities...")
+list.g <- list(
+  Degree = degree(g.network), 
+  # Closeness = closeness(g.network), 
+  PageRank = page.rank(g.network)$vector
+)
+# distances
+g.unweighted <- delete_edge_attr(g.network, "weight")
+d.network <- distances(g.unweighted)
+```
+
+
+# Add the bias characterisation
+
+```{r}
+load(file_kernel)
+
+df_props_genes <- data.frame(
+  id = V(g.network)$name, 
+  Degree = degree(g.network), 
+  PageRank = page.rank(g.network)$vector, 
+  Var_bias = get_vbias(K), 
+  stringsAsFactors = FALSE
+)
+
+g <- ggplot(df_props_genes, aes(x = Degree, y = Var_bias)) + 
+  geom_point(size = .5) + 
+  geom_smooth(method = "lm") + 
+  scale_x_log10() + 
+  ylab("Bias (standard deviation of kernel values)") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_descriptive, "/bias_degree.png"), 
+       width = 4, height = 4, units = "in")
+```
+
+# Generate tables with node and pathway properties
+
+```{r}
+stopifnot(all(df_props_genes$id == rownames(mat.old)))
+# pathway bias (all the nodes, repeated)
+
+# we are dealing with two binary matrices
+# we can represent their joint content in base 2
+mat.oldnew <- mat.old*1L + mat.new*2L
+mat.lab <- c("0" = "other", "1" = "old_fp", "2" = "new", "3" = "old")
+
+df_bias_pathgene <- plyr::adply(
+  mat.oldnew, 2, function(column) {
+    data.frame(
+      id = df_props_genes$id, 
+      var_bias = df_props_genes$Var_bias, 
+      new_pos = mat.lab[as.character(column)], 
+      stringsAsFactors = TRUE
+    )
+  },  
+  .id = "pathway"
+)
+
+# aggregated by pathway
+df_bias_path <- plyr::ddply(
+  df_bias_pathgene, "pathway", function(df_path) {
+    new <- filter(df_path, new_pos == "new")$var_bias
+    other <- filter(df_path, new_pos == "other")$var_bias
+    
+    data.frame(
+      n_new = length(new), 
+      n_other = length(other), 
+      median_new = median(new), 
+      median_other = median(other),
+      median_diff = median(new) - median(other),
+      mean_diff = mean(new) - mean(other), 
+      pval = wilcox.test(new, other, alternative = "less")$p.value
+    )
+  }
+) %>% mutate(fdr = p.adjust(pval, method = "fdr"))
+bias_path_nnew3 <-  filter(df_bias_path, n_new >= 3)
+   
+# save dataframes with properties at the gene level, pathway-gene level and pathway level
+save(df_props_genes, df_bias_pathgene, df_bias_path, 
+     file = paste0(dir_data, "/props_dataframes.RData"), compress = "xz")
+
+g <- ggplot(bias_path_nnew3, aes(x = fdr)) + 
+  geom_histogram() + 
+  xlab(vbias_text_fdr) + 
+  ylab("Number of pathways (must have 3 or more new genes)") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_descriptive, "/bias_histogram_nnew3.png"), 
+       width = 5, height = 5, units = "in")
+
+g <- ggplot(mutate(df_bias_pathgene, 
+              nnew3 = as.character(pathway) %in% as.character(bias_path_nnew3$pathway)), 
+       aes(x = nnew3, y = var_bias, fill = new_pos)) + 
+  geom_boxplot() + 
+  # scale_y_log10() +
+  xlab("Pathway with 3 or more new genes") + 
+  ylab(vbias_text_short) + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_descriptive, "/bias_boxplot_nnew3.png"), 
+       width = 7, height = 6, units = "in")
+
+
+df_plot <- join(df_bias_pathgene, select(df_bias_path, pathway, n_new)) 
+q_nnew <- quantile(df_bias_path$n_new, (0:10)/10) %>% floor %>% unique 
+  
+g <- ggplot(
+  mutate(df_plot, range = cut(df_plot$n_new, breaks = q_nnew, include.lowest = TRUE)), 
+       aes(x = range, y = var_bias, fill = new_pos)) + 
+  geom_boxplot() + 
+  # scale_y_log10() +
+  xlab("Number of new genes") + 
+  ylab(vbias_text_short) + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_descriptive, "/bias_boxplot_nnewrange.png"), 
+       width = 7, height = 6, units = "in")
+```
+
+
+```{r}
+list.dsweep <- list(
+  d0g = list(dd = 0, fun = ">="), 
+  d1 = list(dd = 1, fun = "=="), 
+  d1g = list(dd = 1, fun = ">="),
+  d2g = list(dd = 2, fun = ">=")
+)
+list.d <- plyr::llply(
+  list.paths, 
+  function(path) {
+    # browser()
+    # message(path)
+    # if (path == "hsa00830") browser()
+    # Compute distances to a pathway
+    # MAKE SURE THE GRAPH IS UNWEIGHTED
+    ans <- apply(
+      d.network[, which(mat.old[, path]), drop = F], 
+      1, 
+      function(r) min(r) 
+    )
+    # split(ans, ans)
+    # 
+    # For each setting, return which vertices 
+    # are at which distances
+    plyr::llply(
+      list.dsweep,
+      function(d.settings) 
+        which(
+          do.call(
+            d.settings$fun, 
+            list(a = ans, b = d.settings$dd)))
+    )
+  }
+) %>% set_names(list.paths)
+
+# lists to partition pathways
+# pathway size and relative change
+list.oldsize <- colSums(mat.old)
+list.newsize <- colSums(mat.new)
+list.change <- list.newsize/list.oldsize
+
+# How similar are the old and the new pathway?
+list.jaccard <- sapply(
+  list.paths, 
+  function(ind) 
+    sum(mat.old[, ind]*mat.new[, ind])/
+      sum((mat.old[, ind] + mat.new[, ind]) > 0)
+)
+# topology bias: is the degree from the genes in the pathway 
+# greater than the background degree distribution in the graph?
+list.degreefdr <- sapply(
+  list.paths, 
+  function(path) {
+    wilcox.test(
+      x = list.g$Degree, 
+      y = list.g$Degree[which(mat.new[, path] == 1)], 
+      alternative = "less"
+    )$p.value
+  }
+) %>% p.adjust
+
+paths_biased <- as.character(filter(df_bias_path, fdr < topobias_fdr)$pathway)
+list.bias <- names(list.degreefdr) %in% paths_biased %>% setNames(names(list.degreefdr))
+
+# Ways to partition the kegg pathways
+# names must coincide with partition_names (see params.R)
+partition.paths <- list(
+  None = list.oldsize > 0, # All the genes belong to a unique part
+  Large = list.oldsize > size_small, 
+  Growth = list.change > growth_increase, 
+  SimilarJaccard = list.jaccard > jaccard_high, 
+  TopologyBias = list.degreefdr < topobias_fdr, 
+  Biased = list.bias
+)
+
+partition.genes <- plyr::llply(
+  setNames(
+    names(list.dsweep), 
+    names(list.dsweep)), 
+  function(d) {
+    plyr::llply(
+      list.d, 
+      function(path) path[[d]]
+    )
+  }
+)
+
+if (!file.exists(file_partitions)) {
+  save(partition.genes, partition.paths, 
+       file = file_partitions, compress = "xz")  
+}
+```
+
+
+
+# Properties of the new positives
+
+```{r}
+# Differences on 
+# (1) centrality, and 
+# (2) distance to the original set
+# 
+# New genes not in the original set
+mat.truegenes <- mat.old & mat.new
+mat.newgenes <- (!mat.old) & mat.new
+
+summary(colSums(mat.truegenes))
+summary(colSums(mat.newgenes))
+
+d.network.nodiag <- d.network
+diag(d.network.nodiag) <- NA
+
+df.props <- plyr::ldply(
+  setNames(list.paths, list.paths), 
+  function(pathway) {
+    # browser()
+    #node, property, value
+    
+    #old genes
+    g.true <- names(which(mat.truegenes[, pathway]))
+    g.new <- names(which(mat.newgenes[, pathway]))
+    
+    # Avoid self-distances
+    dist.all <- d.network.nodiag[, g.true, drop = FALSE]
+    
+    dist.mean <- rowMeans(dist.all, na.rm = TRUE)
+    dist.abs <- apply(dist.all, 1, max, na.rm = TRUE)
+    
+    id <- names(dist.mean)
+    
+    data.frame(
+        id = id, 
+        type = ifelse(as.character(id) %in% g.true, 
+                      "old", 
+                      ifelse(
+                        as.character(id) %in% g.new, 
+                        "new", 
+                        "other")
+                      ), 
+        path_ntrue = length(g.true),
+        dist_mean = dist.mean, 
+        dist_abs = dist.abs, 
+        stringsAsFactors = FALSE) %>% join(y = df_props_genes, by = "id")
+  }, 
+  .id = "pathway"
+)
+```
+
+```{r}
+# everything is observed
+# Thus, mean value and sd are directly from K
+# K.mu <- rowMeans(K)
+# K.sd <- apply(K, 1, sd)
+
+# df.props$sd <- K.sd[df.props$id %>% as.character]
+
+ggplot(df.props, aes(x = type, y = Var_bias)) + 
+  geom_boxplot() + 
+  xlab("Node type") + 
+  ylab(vbias_text_short) + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+
+wilcox.test(x = filter(df.props, type == "other")$Var_bias, 
+            y = filter(df.props, type == "new")$Var_bias)
+
+# ggplot(filter(df.props, pathway == "hsa04062"), aes(x = Degree, y = Bias_Stdev)) + 
+#   geom_point(size = .5) + 
+#   geom_smooth(method = "lm", color = "darkred", se = TRUE) + 
+#   scale_x_log10() + 
+#   scale_y_log10() + 
+#   theme_bw() + 
+#   theme(aspect.ratio = 1)
+```
+
+
+
+
+
+
+```{r, eval=FALSE}
+df.plotprops <- gather(df.props, "property", "value", dist_mean:Var_bias)
+
+# Wilcox test to test properties of the new positives and the negatives
+df.wilcox <- plyr::ddply(
+  df.plotprops, 
+  c("property", "pathway"), 
+  function(df) {
+    # browser()
+    # genes might not be unique
+    wt <- wilcox.test(
+      x = dplyr::filter(df, type == "other")$value, 
+      y = dplyr::filter(df, type == "new")$value, 
+      conf.int = TRUE
+    )
+    data.frame(
+      estimate = wt$estimate,
+      lower = wt$conf.int[1],
+      upper = wt$conf.int[2],
+      pvalue = wt$p.value
+    )
+  }, 
+  .progress = "text", 
+  .parallel = TRUE
+)
+
+# They pathways that show differences tend to be the same pathways...!
+df.wilcox_fdr <- plyr::ddply(
+  df.wilcox, 
+  "property", 
+  function(df) {
+    mutate(
+      df, 
+      fdr = p.adjust(pvalue, method = "fdr"), 
+      signif = fdr < .1)
+  }
+)
+write.csv(df.wilcox_fdr, 
+          file = paste0(dir_descriptive, "/table_wilcox_bypathway.csv"), 
+          row.names = FALSE)
+
+dff <- reshape2::acast(df.wilcox_fdr, pathway~property, value.var = "signif")
+dff_cross <- crossprod(dff)
+dff_cross
+
+write.csv(dff_cross, 
+          file = paste0(dir_descriptive, "/table_wilcox_signif_overlap.csv"), 
+          row.names = TRUE)
+
+# Which ones?
+rownames(dff)[rowSums(dff) > 0]
+
+# Second test: which properties are essentially different between 
+# new positives and negatives?
+df.wilcox2 <- plyr::ddply(
+  df.plotprops, 
+  c("property"), 
+  function(df) {
+    # browser()
+    # genes might not be unique
+    wt <- wilcox.test(
+      x = dplyr::filter(df, type == "other")$value, 
+      y = dplyr::filter(df, type == "new")$value, 
+      conf.int = TRUE
+    )
+    data.frame(
+      estimate = wt$estimate,
+      lower = wt$conf.int[1],
+      upper = wt$conf.int[2],
+      pvalue = wt$p.value
+    )
+  }, 
+  .progress = "text", 
+  .parallel = TRUE
+)
+write.csv(df.wilcox2, 
+          file = paste0(dir_descriptive, "/table_wilcox_newpos_vs_neg.csv"), 
+          row.names = FALSE)
+
+# Wilcox test: new positives versus old positives
+# differences in properties?
+df.wilcox_outcast <- plyr::ddply(
+  df.plotprops, 
+  c("property"), 
+  function(df) {
+    # browser()
+    # genes might not be unique
+    wt <- wilcox.test(
+      x = dplyr::filter(df, type == "old")$value, 
+      y = dplyr::filter(df, type == "new")$value, 
+      conf.int = TRUE
+    )
+    data.frame(
+      estimate = wt$estimate,
+      lower = wt$conf.int[1],
+      upper = wt$conf.int[2],
+      pvalue = wt$p.value
+    )
+  }, 
+  .progress = "text"
+)
+write.csv(df.wilcox_outcast, 
+          file = paste0(dir_descriptive, "/table_wilcox_newpos_vs_oldpos.csv"), 
+          row.names = FALSE)
+```
+
+```{r, eval=FALSE}
+g <- ggplot(filter(df.plotprops, property %in% c("Var_bias", "dist_abs", "dist_mean")), 
+  aes(x = type, y = value)) + 
+  # scale_y_log10()  +
+  geom_boxplot(outlier.size = .5) + 
+  facet_wrap(~property, scales = "free_y") + 
+  theme_bw() + 
+  xlab("Node type") + 
+  ylab("Property value") + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_descriptive, "/props_nologscale.png"), 
+       width = 8, height = 3, units = "in")
+
+g <- ggplot(filter(df.plotprops, property %in% c("Degree", "PageRank")), 
+  aes(x = type, y = value)) + 
+  scale_y_log10()  +
+  geom_boxplot(outlier.size = .5) + 
+  facet_wrap(~property, scales = "free_y") + 
+  theme_bw() + 
+  xlab("Node type") + 
+  ylab("Property value (log scale)") + 
+  theme(aspect.ratio = 1)
+ggsave(g, file = paste0(dir_descriptive, "/props_logscale.png"), 
+       width = 5.5, height = 3, units = "in")
+```
+
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/01_sessionInfo.txt"))
+```
+

@@ -1,0 +1,187 @@
+---
+title: "Investigating the properties of positives"
+author: "Sergio Picart-Armada"
+date: "November 8, 2017"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r, message = FALSE}
+library(igraph)
+
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+library(diffuStats)
+library(magrittr)
+
+library(ggplot2)
+
+source("params.R")
+
+load(file_graph)
+load(file_kernel)
+```
+
+
+```{r}
+set.seed(1)
+
+list.g <- list(
+  Degree = degree(g_cc), 
+  # Closeness = closeness(g.network), 
+  PageRank = page.rank(g_cc)$vector
+)
+
+d.network <- distances(g_cc)
+d.network.nodiag <- d.network
+diag(d.network.nodiag) <- NA
+
+V(g_cc)$in_pathway <- ifelse(V(g_cc)$geneID %in% g_cc$kegg_mapped$gene, 
+                             "pathway", "nopathway")
+V(g_cc)$in_all <- ifelse(V(g_cc)$obs_all, "obs", "hid")
+V(g_cc)$in_lym <- ifelse(V(g_cc)$obs_lym, "obs", "hid")
+
+stopifnot(all(table(V(g_cc)$geneID) == 1))
+V(g_cc)$categ <- paste0(V(g_cc)$in_all, "_", V(g_cc)$in_pathway)
+
+df.nodes <- plyr::ldply(
+  setNames(c("in_all", "in_lym"), c("all", "lym")), 
+  function(arr) {
+    data.frame(
+      id = as.character(V(g_cc)$name), 
+      pathway = V(g_cc)$in_pathway, 
+      bkgd = get.vertex.attribute(g_cc, arr)
+    )
+  }, 
+  .id = "array"
+)
+
+df.props <- plyr::ddply(
+  df.nodes, 
+  c("array", "pathway", "bkgd"), 
+  function(df_categ) {
+    # browser()
+    #node, property, value
+    arr <- df_categ$array[1] %>% as.character
+    
+    # positive, measured genes
+    g.pathway <- V(g_cc)$in_pathway == "pathway"
+    g.obs <- get.vertex.attribute(g_cc, paste0("in_", arr)) == "obs"
+    g.obspathway <- which(g.obs & g.pathway)
+    
+    # names of observed pathway genes
+    g.pos_obs <- V(g_cc)[g.obspathway]$name
+    
+    # names in the current data frame
+    g.new <- df_categ$id %>% as.character
+    
+    # Avoid self-distances
+    dist.all <- d.network.nodiag[g.new, g.pos_obs, drop = FALSE]
+    
+    dist.mean <- rowMeans(dist.all, na.rm = TRUE)
+    dist.abs <- apply(dist.all, 1, max, na.rm = TRUE)
+    
+    # bias with the kernel values to the observed part
+    # note: g.obs depends on the array!
+    bias <- rowSums(K[V(g_cc)[g.new]$geneID, V(g_cc)[which(g.obs)]$geneID])
+    
+    df_out <- tibble(
+        id = g.new, 
+        dist_mean = dist.mean, 
+        dist_abs = dist.abs, 
+        degree = list.g$Degree[g.new], 
+        pagerank = list.g$PageRank[g.new], 
+        bias = bias
+    )
+    
+    df_out
+  }
+)
+```
+
+```{r}
+g <- ggplot(df.props, aes(x = pathway, y = bias, fill = pathway)) + 
+  geom_boxplot() + 
+  scale_fill_discrete(guide = FALSE) + 
+  facet_grid(array~bkgd) + 
+  xlab("Node category") + 
+  ylab("Node bias") + 
+  theme_bw() + 
+  theme(aspect.ratio = 1)
+ggsave(
+  g, filename = paste0(dir_positive, "/plot_bias.png"), 
+  width = 7, height = 7, units = "in")
+```
+
+```{r}
+df.plotprops <- gather(df.props, "property", "value", dist_mean:bias) %>% 
+  filter(array == "all") %>% 
+  mutate(categ = paste(bkgd, pathway, sep = "_")) 
+
+props <- unique(df.plotprops$property)
+references <- unique(df.plotprops$categ) 
+```
+
+```{r}
+grid.ref <- expand.grid(reference = references, categ = references, property = props) %>% 
+  filter(as.character(reference) > as.character(categ)) 
+# %>% 
+  # filter(substr(reference, 1, 3) == substr(categ, 1, 3))
+
+# Wilcox test to test properties of the new positives and the negatives
+df.wil <- plyr::adply(
+  grid.ref, 1, 
+  function(df) {
+    df.prop <- filter(df.plotprops, property == df$property)
+    prop <- df$property[1]
+    # genes might not be unique
+    
+    x <- filter(df.prop, categ == df$reference)$value
+    y <- filter(df.prop, categ == df$categ)$value
+    wt <- wilcox.test(
+      x = x, 
+      y = y, 
+      conf.int = TRUE
+    )
+    data.frame(
+      nx = length(x), 
+      ny = length(y), 
+      meanx = mean(x), 
+      meany = mean(y), 
+      medianx = median(x), 
+      mediany = median(y), 
+      estimate = wt$estimate,
+      lower = wt$conf.int[1],
+      upper = wt$conf.int[2],
+      pvalue = wt$p.value
+    )
+  }, 
+  .id = "reference"
+) %>% 
+  group_by(property) %>% 
+  mutate(fdr = p.adjust(pvalue, method = "fdr"))
+
+df.pathcompare <- filter(
+  df.wil, 
+  grepl("_pathway", reference) & 
+  categ == gsub("_", "_no", reference))
+# View(df.pathcompare)
+
+write.csv(df.pathcompare, 
+          file = paste0(dir_positive, "/table_wilcox_properties.csv"), 
+          row.names = FALSE)
+```
+
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0(dir_metadata, "/06_sessionInfo.txt"))
+```
+

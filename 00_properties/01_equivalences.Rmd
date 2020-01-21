@@ -1,0 +1,219 @@
+---
+title: "Spectral properties of the null distributions"
+author: "Sergio Picart-Armada"
+date: "April 2, 2019"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+## Packages and parameters
+
+```{r}
+library(plyr)
+library(dplyr)
+library(igraph)
+library(ggplot2)
+library(ggsci)
+library(diffuStats)
+
+param <- new.env()
+source("params.R", local = param)
+
+source("../helper_funs.R")
+
+n <- 100
+n2 <- n/2
+p <- .5
+
+set.seed(1)
+
+# Graph
+g <- barabasi.game(n, m = 3, directed = FALSE) 
+V(g)$name <- paste0("V", 1:vcount(g))
+V(g)$obs <- ifelse(V(g) %in% 1:n2, TRUE, FALSE) %>% sample
+
+# Kernels
+K <- list(
+  "RL (unnormalised)" = regularisedLaplacianKernel(g), 
+  "P-step (normalised)" = pStepKernel(graph = g, p = 5)
+)
+
+extrafont::loadfonts(quiet = TRUE)
+```
+
+## Define inputs 
+
+### Weights: 1/0, 1/-1, and another random encoding
+
+```{r}
+# Inputs
+input <- setNames(
+  rbinom(n = n, size = 1, prob = p), 
+  V(g)$name
+)
+i2_encoding <- c(1, -1)
+i3_encoding <- sort(runif(2), decreasing = TRUE)
+mat_input <- cbind(
+  i1 = ifelse(input, 1, 0), 
+  i2 = ifelse(input, i2_encoding[1], i2_encoding[2]), 
+  i3 = ifelse(input, i3_encoding[1], i3_encoding[2])
+)
+head(mat_input)
+```
+
+## Compute diffusion scores
+
+```{r}
+# Prop 1: if no unlabelled nodes, encoding does not matter
+# Prop 2: labelling is irrelevant for mc
+# Prop 3: labelling is irrelevant for z
+scores <- plyr::ldply(
+  K, 
+  function(kern) {
+    diffuse_grid(
+      scores = list("All labelled" = mat_input, 
+                    "Half labelled" = head(mat_input, n2)),  
+      grid_param = expand.grid(
+        method = c("raw", "mc", "z"), n.perm = 1e4), 
+      K = kern)
+  }, 
+  .id = "kernel"
+)
+
+head(scores)
+```
+
+## Compute ranking
+
+```{r}
+df_ranking <- plyr::ddply(
+  scores, 
+  c("background", "method", "kernel"), 
+  function(df) {
+    df %>% select_if(is.numeric) %>% 
+      mutate_all(function(x) rank(-x)/length(x)) %>% 
+      mutate(node_id = df$node_id)
+  }
+) %>% mutate(partial = node_id %in% V(g)[obs]$name, 
+             positive = node_id %in% subset(names(input), input == 1))
+
+head(df_ranking)
+# filter(df_ranking, method == "raw")
+```
+
+# Equivalences between scores
+
+## 1) Ranking using different weights for +,-,u
+
+```{r}
+# Due to the implementation in mc, raw with 1/0 will give different results
+# because it uses less permutations (randomly draws the 1s), which results 
+# in an effect similar to a seed change
+# Therefore, collinearity within i1 and i2 is not perfect, but 
+# it is between i2 and i3
+encoding_label <- function(encoding, digits = 3) {
+  paste0("Ranking with weights y(+)=", 
+         round(encoding[1], digits), 
+         ", y(-)=", 
+         round(encoding[2], digits), 
+         " (lower is better)")
+}
+g.labelling <- ggplot(df_ranking, 
+       aes(x = i2, y = i3, color = ifelse(positive, "Positive", "Negative"))) + 
+  geom_point(size = .6) + 
+  scale_color_manual(values = colour_jama, name = "Type") + 
+  facet_grid(kernel + background ~ method, scales = "free") + 
+  xlab(encoding_label(i2_encoding)) + 
+  ylab(encoding_label(i3_encoding)) + 
+  theme_bw() + 
+  theme(aspect.ratio = 1, legend.position = "bottom", 
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+ggsave(paste0(param$dir.equiv, "/labelling.pdf"), g.labelling, 
+       width = param$width, height = param$height - 2, family = param$family)
+g.labelling
+```
+
+## 2) Equivalences between scores
+
+```{r}
+# Small prop 1: ml = gm = raw if no unlabelled
+# Small prop 2: ml = gm = raw if no negatives
+mat_binary <- mat_input[, "i1", drop = FALSE]
+mat_ones <- mat_binary[mat_binary == 1, , drop = FALSE]
+mat_partial <- head(mat_binary, n2)
+
+mat_check <- data.frame(mat_binary)
+mat_check[setdiff(rownames(mat_check), rownames(mat_partial)), ] <- NA 
+mat_check$node_id <- as.factor(rownames(mat_check))
+mat_check %<>% mutate(
+  node_type = as.factor(ifelse(is.na(i1), "unlabelled", 
+                               ifelse(i1 == 1, "positive", "negative")))
+) %>% select(-i1)
+
+# v_aux <- tibble(
+#   node_id = V(g)[obs]$name, 
+#   type = mat_partial[node_id, ])
+
+df_scores <- diffuse_grid(
+  scores = list(no_unlabelled = mat_binary, 
+                no_negative = mat_ones,
+                partial = mat_partial),  
+  grid_param = expand.grid(method = c("raw", "ml", "gm", "ber_s")), 
+  K = K$RL
+)
+df_ranking <- group_by(df_scores, method, background) %>% 
+  mutate(i1 = rank(-i1))
+
+head(df_scores)
+```
+
+```{r}
+# Prop 1
+GGally::ggpairs(
+  tidyr::spread(df_ranking, key = method, value = i1) %>% 
+    filter(background == "no_unlabelled") %>% 
+    as.data.frame %>%
+    select(raw, ml, gm)
+)
+ggsave(paste0(param$dir.equiv, "/equiv_raw_ml_gm_no_unlabelled.pdf"), 
+       width = param$width, height = param$width, family = param$family)
+
+# Prop 2
+GGally::ggpairs(
+  tidyr::spread(df_ranking, key = method, value = i1) %>% 
+    filter(background == "no_negative") %>% 
+    as.data.frame %>%
+    select(raw, ml, gm)
+)
+ggsave(paste0(param$dir.equiv, "/equiv_raw_ml_gm_no_negative.pdf"), 
+       width = param$width, height = param$width, family = param$family)
+
+# Prop 3
+df_prop3 <- filter(
+  df_ranking, 
+  method %in% c("raw", "ber_s") & background == "partial") %>% 
+  as.data.frame %>%
+  join(y = mat_check, type = "left")
+
+ggplot(tidyr::spread(df_prop3, key = method, value = i1), 
+       aes(x = raw, y = ber_s)) + 
+  geom_point() + 
+  facet_grid(.~node_type) + 
+  theme_bw() + 
+  theme(aspect.ratio = 1) 
+ggsave(paste0(param$dir.equiv, "/equiv_raw_bers.pdf"), 
+       width = param$width, height = 2.5, family = param$family)
+```
+
+
+# Reproducibility
+
+```{r}
+out <- capture.output(sessionInfo())
+writeLines(out, con = paste0("00_metadata/01_sessionInfo.txt"))
+```
+
