@@ -1,0 +1,600 @@
+---
+title: "Describing the BioGRID network with differing curation levels"
+author: "Sergio Picart-Armada"
+date: "August 16, 2020"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+library(igraphdata)
+library(igraph)
+library(plyr)
+library(magrittr)
+
+# https://stats.stackexchange.com/questions/22988/how-to-obtain-the-p-value-check-significance-of-an-effect-in-a-lme4-mixed-mode
+library(lme4)
+library(lmerTest)
+library(emmeans)
+
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+
+# the dataset is already preprocessed in the retroData package
+library(retroData)
+data("biogrid2011")
+data("kegg2011")
+data("kegg2018")
+
+source("../helper_funs.R")
+
+# library(doParallel)
+# nodes <- parallel::detectCores()
+# cl <- parallel::makeCluster(nodes)
+# doParallel::registerDoParallel(cl)
+# parallelMap::parallelStartMulticore()
+# doMC::registerDoMC(cores = 4)
+
+data(yeast)
+g.yeast <- diffuStats::largest_cc(yeast)
+
+# source("params.R")
+dir_kernels <- "~/big/devel/big/diffusion/"
+```
+
+```{r}
+describe_net <- function(g) {
+  # g <- barabasi.game(1000, power = 1, m = 3)
+  # g
+  deg <- igraph::degree(g, mode = "all")
+  plf <- igraph::fit_power_law(x = deg + 1, xmin = 10)
+  clt <- igraph::clusters(g)
+  # clt.tab <- table(clt$membership)
+  
+  data.frame(
+    vc = igraph::vcount(g), 
+    ec = igraph::ecount(g), 
+    meandeg = mean(deg),
+    density = igraph::graph.density(g), 
+    alpha = plf$alpha, 
+    ccs = clt$no, 
+    largestcc = max(clt$csize), 
+    isolatednodes = sum(clt$csize == 1), 
+    leaves = sum(deg == 1)
+  )
+}
+
+```
+
+# Define the background
+
+```{r}
+list_bkgd <- list(
+  bkgd_kegg = unique(unlist(kegg2011)), 
+  bkgd_all = V(biogrid2011)$name
+)
+
+sapply(list_bkgd, length)
+```
+
+# Check the edge weights
+
+```{r}
+table(E(biogrid2011)$weight)
+
+# based on the distribution of edge weights
+ref.weights <- c(0, .3, .9)
+
+# yeast network
+ref.conf <- list(Threshold_medium = c("medium", "high"), Threshold_high = "high")
+```
+
+```{r}
+list_biogrid <- plyr::llply(
+  setNames(ref.weights, paste0("Threshold_", ref.weights)), 
+  function(th) {
+    e.rm <- E(biogrid2011)[weight < th]
+    g <- igraph::delete.edges(biogrid2011, e.rm)
+    
+    g
+  }
+)
+sapply(list_biogrid, ecount)
+
+sapply(list_biogrid, describe_net)
+```
+
+Same for the yeast network
+
+```{r}
+list_yeast <- plyr::llply(
+  ref.conf, 
+  function(th) {
+    # remove edges outside the specified confidence values
+    e.rm <- E(g.yeast)[!(Confidence %in% th)]
+    g <- igraph::delete.edges(g.yeast, e.rm)
+    
+    g
+  }
+)
+
+list_bkgd_yeast <- split(
+  V(g.yeast)$name, V(g)$Class
+)
+
+sapply(list_yeast, ecount)
+
+sapply(list_yeast, describe_net)
+```
+
+
+# Generate kernels and stats
+
+
+```{r}
+
+generate_kernel_and_stats <- function(g, list_bkgd, filename) {
+  # browser()
+  
+  deg <- igraph::degree(g, mode = "all")
+  pr <- igraph::page.rank(g)$vector
+  
+  if (!file.exists(filename)) {
+    message("Computing kernel...")
+    K <- diffuStats::regularisedLaplacianKernel(g)
+    saveRDS(K, file = filename)
+  } else {
+    message("Found kernel in ", filename, ". Loading...")
+    K <- readRDS(filename)
+  }
+  
+  
+  df.props <- data.frame(
+        id = V(g)$name, 
+        degree = deg,
+        pagerank = pr, 
+        stringsAsFactors = FALSE)
+    
+  df.moments <- plyr::ldply(
+    list_bkgd, function(bkgd) {
+      tibble(
+        id = rownames(K), 
+        ebias = get_ebias(K[, as.character(bkgd)]), 
+        vbias = get_vbias(K[, as.character(bkgd)]), 
+        rank_ebias = rank(ebias), 
+        rank_vbias = rank(vbias), 
+        inbkgd = rownames(K) %in% as.character(bkgd)
+      )
+    }, 
+    .id = "bkgd"
+  )
+  
+  message("Joining tables...")
+  dplyr::left_join(df.moments, df.props, by = "id")
+}
+
+# g2 <- induced.subgraph(biogrid2011, 1:100)
+# a = generate_kernel_and_stats(g2, lapply(list_bkgd, intersect, V(g2)$name), "test.rds")
+# a
+
+```
+
+```{r}
+list_rds <- paste0(dir_kernels, "/biogrid_", names(list_biogrid), ".rds")
+
+list_dfs <- mapply(
+  generate_kernel_and_stats, 
+  g = list_biogrid, 
+  filename = list_rds, 
+  MoreArgs = list(list_bkgd = list_bkgd), 
+  SIMPLIFY = FALSE
+)
+
+df_all <- plyr::ldply(list_dfs, identity, .id = "threshold") %>% 
+  dplyr::mutate(threshold = as.ordered(threshold))
+```
+
+```{r}
+list_rds_yeast <- paste0(dir_kernels, "/yeast_", names(list_yeast), ".rds")
+
+list_dfs_yeast <- mapply(
+  generate_kernel_and_stats, 
+  g = list_yeast, 
+  filename = list_rds_yeast, 
+  MoreArgs = list(list_bkgd = list_bkgd_yeast), 
+  SIMPLIFY = FALSE
+)
+
+df_all_yeast <- plyr::ldply(list_dfs_yeast, identity, .id = "threshold") %>% 
+  dplyr::mutate(threshold = as.ordered(threshold))
+```
+
+# Plot findings
+
+Hypotheses:
+
+1. Expected values tend to increase in labelled nodes (less connections, therefore they tend to keep the temperature), while they decrease in unlabelled nodes (they receive less flow from the labelled nodes).
+2. Variances increase in labelled nodes and decrease in unlabelled nodes.
+3. Both effects are more extreme in loosely connected genes, because it resembles a binary connect/disconnect state.
+
+## Moments
+
+### E vs V
+
+```{r}
+ggplot(subset(df_all, bkgd == "bkgd_kegg"), aes(x = ebias, y = vbias)) + 
+  geom_point(aes(colour = log10(degree + 1)), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2)) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(inbkgd ~ threshold) +
+  theme_bw()
+```
+
+```{r}
+ggplot(subset(df_all, bkgd == "bkgd_kegg"), aes(x = log10(pagerank), y = log10(ebias))) + 
+  geom_point(aes(colour = log10(degree + 1)), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2)) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(inbkgd ~ threshold) +
+  theme_bw()
+```
+
+```{r, fig.width=7, fig.height=7}
+ggplot(subset(df_all_yeast), aes(x = ebias, y = vbias, colour = bkgd)) + 
+  geom_point(aes(), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(log(x))) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(inbkgd ~ threshold) +
+  theme_bw() +
+  theme(aspect.ratio = 1, legend.position = "none")
+```
+
+```{r, fig.width=7, fig.height=7}
+ggplot(subset(df_all_yeast), aes(x = pagerank, y = ebias, colour = bkgd)) + 
+  geom_point(aes(), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(log(x))) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(inbkgd ~ threshold) +
+  theme_bw() +
+  theme(aspect.ratio = 1, legend.position = "none")
+```
+
+### E only
+
+```{r}
+table(df_all$bkgd)
+```
+
+```{r}
+table(df_all$bkgd, df_all$threshold)
+```
+
+```{r}
+subset(df_all, bkgd == "bkgd_kegg") %>%
+  ggplot(aes(x = threshold, y = ebias, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+subset(df_all, bkgd == "bkgd_kegg" & degree > 0) %>%
+  ggplot(aes(x = threshold, y = ebias, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+### Yeast
+
+```{r}
+subset(df_all_yeast) %>%
+  ggplot(aes(x = threshold, y = ebias, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+subset(df_all_yeast, degree > 0) %>%
+  ggplot(aes(x = threshold, y = ebias, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+df_all_kegg_noiso <- subset(df_all, bkgd == "bkgd_kegg" & degree > 0) %>%
+  dplyr::select(id, ebias, threshold, inbkgd) %>%
+  tidyr::spread(key = threshold, value = ebias) %>%
+  dplyr::mutate(diff_3_vs_0 = Threshold_0.3 - Threshold_0)
+
+dim(df_all_kegg_noiso)
+```
+
+
+```{r}
+# remove isolated nodes, as they appear as horizontal lines in the plot, 
+# with ebias either 0 or 1, and vbias Inf
+df_all_kegg_noiso %>%
+  ggplot(aes(x = Threshold_0, y = Threshold_0.3)) + 
+  geom_abline(intercept = 0, slope = 1, lty = 2, colour = "gray70") +
+  geom_point(size = .3) +
+  geom_smooth(method = "lm", colour = "indianred1") +
+  scale_colour_distiller(palette = "Spectral") +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_wrap(~inbkgd) +
+  coord_fixed() +
+  theme_bw() 
+```
+
+We observe:
+
+* Labelled nodes: they tend to increase their expected values. 
+Probably because the proportion of connections to the unlabelled nodes is lowering, therefore more flow stays in the labelled part.
+* Unlabelled nodes: analogously, the expected values are lowering with higher filtering.
+
+### E differences
+
+Boxplot with differences
+
+```{r, fig.width=4, fig.height=4}
+ggplot(df_all_kegg_noiso, aes(x = inbkgd, y = diff_3_vs_0)) +
+  geom_hline(yintercept = 0, colour = "gray40") +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+ggplot(df_all_kegg_noiso, aes(x = Threshold_0, y = diff_3_vs_0)) +
+  geom_hline(yintercept = 0, colour = "gray40") +
+  geom_point(size = .3) +
+  geom_smooth(method = "lm", formula = y ~ x + I(x^2)) +
+  facet_wrap(~inbkgd) +
+  theme_bw()
+```
+
+Correlation of old and new values, by background:
+
+```{r}
+by(
+  df_all_kegg_noiso, 
+  df_all_kegg_noiso$"inbkgd", 
+  function(x, ...) cor.test(x$Threshold_0.3, x$Threshold_0, ...),
+  use = "complete.obs", method = "pearson")
+```
+
+```{r}
+by(
+  df_all_kegg_noiso, 
+  df_all_kegg_noiso$"inbkgd", 
+  function(x, ...) cor.test(x$Threshold_0.3, x$Threshold_0, ...),
+  use = "complete.obs", method = "spearman", exact = TRUE)
+```
+
+Linear model on the difference of expected values:
+
+```{r}
+lm_ebias_diff <- glm(
+  (diff_3_vs_0 + 1)/2 ~ inbkgd*Threshold_0, 
+  family = quasibinomial(), 
+  data = df_all_kegg_noiso
+)
+summary(lm_ebias_diff)
+```
+
+Linear model on the magnitudes themselves:
+
+```{r}
+lm_ebias_diff <- glm(
+  Threshold_0.3 ~ Threshold_0*inbkgd, 
+  family = quasibinomial(), 
+  data = df_all_kegg_noiso
+)
+summary(lm_ebias_diff)
+```
+
+```{r}
+plot(lm_ebias_diff)
+```
+
+
+```{r}
+confint(lm_ebias_diff)
+```
+
+```{r}
+df_ebias_diff_emmeans <- emmeans(
+  lm_ebias_diff, specs = c("Threshold_0", "inbkgd"), 
+  type = "response", nesting = NULL) %>% summary
+```
+
+
+## V only
+
+Here we should replace the `-Inf` values with a small value (e.g. its minimum) to track down those nodes going into constant scores.
+The minimum finite value is `r min(df_all$vbias %>% subset(is.finite(.)))`.
+
+```{r}
+subset(df_all, bkgd == "bkgd_kegg") %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  ggplot(aes(x = threshold, y = vbias.finite, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+subset(df_all, bkgd == "bkgd_kegg" & degree > 0) %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  ggplot(aes(x = threshold, y = vbias.finite, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+### Yeast
+
+```{r}
+subset(df_all_yeast) %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  ggplot(aes(x = threshold, y = vbias.finite, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+subset(df_all_yeast, degree > 0) %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  ggplot(aes(x = threshold, y = vbias.finite, fill = inbkgd)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+AUROC as a descriptive measure on how boxes drift away?
+Well, they look very extreme in both cases.
+
+```{r}
+df_all_yeast %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  plyr::ddply(c("threshold", "bkgd"), function(df) 
+    data.frame(auroc = diffuStats::metric_auc(actual = df$inbkgd, predicted = df$ebias)))
+  
+```
+
+
+
+```{r}
+subset(df_all, bkgd == "bkgd_kegg" & degree > 0) %>%
+  dplyr::select(id, vbias, threshold, inbkgd) %>%
+  tidyr::spread(key = threshold, value = vbias) %>%
+  ggplot(aes(x = Threshold_0, y = Threshold_0.3)) + 
+  geom_abline(intercept = 0, slope = 1, lty = 2, colour = "gray70") +
+  geom_point(size = .3) +
+  geom_smooth(method = "lm", colour = "indianred1") +
+  scale_colour_distiller(palette = "Spectral") +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_wrap(~inbkgd) +
+  coord_fixed() +
+  theme_bw() 
+```
+
+We observe:
+
+* Labelled nodes: they tend to increase their variances, probably due to the lower degree of the nodes. 
+* Unlabelled nodes: generally variances seem to grow, with exceptions (CCs that get disconnected?).
+
+## Expected value lm
+
+```{r}
+# Understanding L, Q in output
+# looks like ordered translates into reference (lowest), then
+# L, Q, C, and numbers...
+# 
+# https://stackoverflow.com/questions/25735636/interpretation-of-ordered-and-non-ordered-factors-vs-numerical-predictors-in-m
+
+lm_ebias <- lm(
+  ebias ~ threshold*inbkgd + threshold * log10(pagerank), 
+  # ebias ~ threshold*inbkgd + threshold * log10(pagerank), 
+  data = subset(df_all, bkgd == "bkgd_kegg")
+)
+
+summary(lm_ebias)
+anova(lm_ebias)
+```
+
+```{r}
+plot(lm_ebias)
+```
+
+### Yeast
+
+```{r}
+# glm gi
+lm_ebias_yeast <- glm(
+  # ebias ~ inbkgd + log10(degree + 1) + inbkgd*threshold,
+  ebias ~ inbkgd + pagerank + inbkgd*threshold + bkgd,
+  data = df_all_yeast
+)
+
+summary(lm_ebias_yeast)
+```
+
+```{r}
+plot(lm_ebias_yeast)
+```
+
+
+## Expected value lmer
+
+Try a mixed model instead
+
+```{r}
+lmer_ebias <- lmerTest::lmer(
+  ebias ~ inbkgd + log10(degree + 1) * threshold:log10(degree + 1) + (1|id), 
+  data = subset(df_all, bkgd == "bkgd_kegg")
+)
+
+summary(lmer_ebias)
+```
+
+```{r}
+plot(lmer_ebias)
+```
+
+
+### Yeast
+
+```{r}
+# lmer_ebias_yeast <- lmerTest::lmer(
+#   ebias ~ inbkgd + log10(degree + 1) * threshold:log10(degree + 1) + (1|id) + (1|bkgd), 
+#   data = df_all_yeast
+# )
+# 
+# summary(lmer_ebias_yeast)
+```
+
+## Variance lm
+
+```{r}
+lm_vbias <- lm(
+  vbias ~ inbkgd + threshold * log10(pagerank), 
+  data = subset(df_all, bkgd == "bkgd_kegg" & is.finite(vbias))
+)
+
+summary(lm_vbias)
+anova(lm_vbias)
+```
+
+```{r}
+plot(lm_vbias)
+```
+
+## Variance lmer
+
+```{r}
+lmer_vbias <- lmerTest::lmer(
+  vbias ~ inbkgd + threshold * log10(pagerank) + (1|id), 
+  data = subset(df_all, bkgd == "bkgd_kegg" & is.finite(vbias))
+)
+
+summary(lmer_vbias)
+anova(lmer_vbias)
+```
+
+```{r}
+plot(lmer_vbias)
+```
+
+# Reproducibility
+
+```{r}
+# out <- capture.output(sessionInfo())
+# writeLines(out, con = paste0(dir_metadata, "/01_sessionInfo.txt"))
+```
+
