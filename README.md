@@ -147,7 +147,14 @@ BIB_CMD = bibtex
 Although it is recommended to use `R 3.5.3`, the code was also run on `3.4.4`, `3.5.1` and `3.5.2`.
 You might need to change the path to the R executable in your system.
 
-### Step 4: rebuild all the reports
+### Step 4: check paths
+
+The `params.R` files contain paths that you might want to change, typically to store large kernel matrices.
+E.g. `file_kernel <- "~/big/devel/big/diffusion/kernell_dlbcl.RData"` in `02_dlbcl/params.R`.
+
+You might want to change those to somewhere convenient in your machine.
+
+### Step 5: rebuild all the reports
 
 Now simply run
 
