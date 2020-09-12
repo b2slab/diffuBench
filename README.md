@@ -18,6 +18,15 @@ The calculations for classical and normalised propagation scores were carried ou
 
 ## Repository structure
 
+Overall, there are four main analyses, which are aligned with the folder structure.
+
+Analysis | Purpose | Folder
+-------- | ------- | ------
+Mathematical properties | Describe the statistics | `00_properties`
+Synthetic signals on yeast interactome | Understand biased and unbiased true signals | `01_synthetic`
+Simulated gene expression in a human interactome | Influence of statistical background to the performance | `02_dlbcl`
+Prospective pathway gene prediction | Variance-related bias use case | `03_retroData`
+
 In general, the `metadata` directories contain the output of `sessionInfo()`, whereas `params.R` contain configuration settings and general parameters and `aux_*.R` contain auxiliary functions with the purpose specified in the file name.
 
 The directories that match the numeric prefix of a report (e.g. the report `02_dlbcl/01_analysis.Rmd` and the directory `02_dlbcl/01_network`) typicall contain its output files.
@@ -147,3 +156,7 @@ make props demos s1 s2 s3
 ```
 
 This would take up to one day to rebuild everything on our machine.
+
+## Contact
+
+You can direct your complaints at `sergi.picart` at `upc` dot `edu`.
