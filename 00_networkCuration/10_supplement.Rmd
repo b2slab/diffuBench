@@ -1,0 +1,574 @@
+---
+title: "Supplement 5: changes in statistical moments due to edge filtering"
+author: 
+  - "Sergio Picart-Armada"
+  - "Wesley K. Thompson"
+  - "Alfonso Buil"
+  - "Alexandre Perera-Lluna"
+date: "August 16, 2020"
+bibliography: "10_bibliography.bib"
+output: bookdown::pdf_document2
+---
+
+
+```{r setup, include=FALSE}
+# Hide the code, suppress messages and warnings
+# otherwise document gets too long
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                      fig.height = 3, fig.align = 'center')
+```
+
+\clearpage
+
+# Introduction
+
+This additional file analyses how increasing the stringency of edge filtering affects the statistical moments (mean and variance) of the nodes. 
+To this end, we compared the null distributions under two filtering levels in the yeast interactome [@von2002yeast]  and three levels in the BioGRID network [@biogrid2017].
+This document can be re-built anytime by knitting its corresponding `.Rmd` file.
+
+
+```{r, warning = FALSE, message = FALSE}
+library(igraphdata)
+library(igraph)
+library(plyr)
+library(magrittr)
+
+# https://stats.stackexchange.com/questions/22988/how-to-obtain-the-p-value-check-significance-of-an-effect-in-a-lme4-mixed-mode
+library(lme4)
+library(lmerTest)
+library(emmeans)
+
+library(dplyr)
+library(tidyr)
+
+library(ggplot2)
+library(ggsci)
+
+# the dataset is already preprocessed in the retroData package
+library(retroData)
+data("biogrid2011")
+data("kegg2011")
+data("kegg2018")
+
+g_biogrid <- biogrid2011
+
+source("../helper_funs.R")
+gg_def <- theme_bw() + theme(aspect.ratio = 1)
+
+data(yeast)
+g_yeast <- diffuStats::largest_cc(yeast)
+
+# source("params.R")
+dir_kernels <- "~/big/devel/big/diffusion/"
+```
+
+```{r}
+describe_net <- function(g) {
+  # g <- barabasi.game(1000, power = 1, m = 3)
+  # g
+  deg <- igraph::degree(g, mode = "all")
+  plf <- igraph::fit_power_law(x = deg + 1, xmin = 10)
+  clt <- igraph::clusters(g)
+  # clt.tab <- table(clt$membership)
+  
+  data.frame(
+    vc = igraph::vcount(g), 
+    ec = igraph::ecount(g), 
+    meandeg = mean(deg),
+    density = igraph::graph.density(g), 
+    alpha = plf$alpha, 
+    ccs = clt$no, 
+    largestcc = max(clt$csize), 
+    isolated = sum(clt$csize == 1), 
+    leaves = sum(deg == 1)
+  )
+}
+
+generate_kernel_and_stats <- function(g, list_bkgd, filename) {
+  # browser()
+  
+  deg <- igraph::degree(g, mode = "all")
+  pr <- igraph::page.rank(g)$vector
+  
+  if (!file.exists(filename)) {
+    message("Computing kernel...")
+    K <- diffuStats::regularisedLaplacianKernel(g)
+    saveRDS(K, file = filename)
+  } else {
+    message("Found kernel in ", filename, ". Loading...")
+    K <- readRDS(filename)
+  }
+  
+  
+  df.props <- data.frame(
+        id = V(g)$name, 
+        degree = deg,
+        pagerank = pr, 
+        stringsAsFactors = FALSE)
+    
+  df.moments <- plyr::ldply(
+    list_bkgd, function(bkgd) {
+      tibble(
+        id = rownames(K), 
+        ebias = get_ebias(K[, as.character(bkgd)]), 
+        vbias = get_vbias(K[, as.character(bkgd)]), 
+        rank_ebias = rank(ebias), 
+        rank_vbias = rank(vbias), 
+        inbkgd = rownames(K) %in% as.character(bkgd), 
+        Location = ifelse(inbkgd, "Inside background", "Outside background")
+      )
+    }, 
+    .id = "bkgd"
+  )
+  
+  message("Joining tables...")
+  dplyr::left_join(df.moments, df.props, by = "id")
+}
+
+```
+
+# Yeast network
+
+## General description
+
+The yeast interactome [@von2002yeast] that was used for the synthetic signals contained confidence annotations for its interactions. 
+
+```{r}
+table(E(g_yeast)$Confidence)
+```
+
+Therefore, two scenarios were defined: medium and high confidence interactions, or high only.
+
+```{r}
+# yeast network filtering
+ref_conf_yeast <- list(Threshold_medium = c("medium", "high"), Threshold_high = "high")
+
+list_yeast <- plyr::llply(
+  ref_conf_yeast, 
+  function(th) {
+    # remove edges outside the specified confidence values
+    e.rm <- E(g_yeast)[!(Confidence %in% th)]
+    g <- igraph::delete.edges(g_yeast, e.rm)
+    
+    g
+  }
+)
+
+df_stats_yeast <- plyr::ldply(list_yeast, describe_net, .id = "confidence")
+```
+
+While the default medium and high confidence setting retains one connected component of `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[1])$largestcc` nodes from which `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[1])$leaves` are leaf nodes, the stringent filtering only leaves a largest component of `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[2])$largestcc` nodes and produces `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[2])$isolated` isolated nodes.
+
+```{r}
+df_stats_yeast[c("confidence", "vc", "ec", "ccs", "largestcc", "isolated", "leaves")] #%>% t %>% as.data.frame
+```
+
+## Defining the background
+
+To recreate cases with expected value-related bias, several hypothetical statistical backgrounds were defined.
+Those were defined as each (disjoint) node category as annotated in the data:
+
+```{r}
+# backgrounds for the null distributions
+list_bkgd_yeast <- split(V(g_yeast)$name, V(g_yeast)$Class)
+
+sapply(list_bkgd_yeast, length)
+```
+
+The description of the classes:
+
+```{r}
+g_yeast$Classes[c("Category", "Description")]
+```
+
+
+## Kernels and statistics
+
+After generating one graph kernels per filtering setting, the statistical moments were computed for each statistical background.
+
+```{r}
+# check for existing kernels
+list_rds_yeast <- paste0(dir_kernels, "/yeast_", names(list_yeast), ".rds")
+
+# generate kernels (if missing) and gather stats
+list_dfs_yeast <- mapply(
+  generate_kernel_and_stats, 
+  g = list_yeast, 
+  filename = list_rds_yeast, 
+  MoreArgs = list(list_bkgd = list_bkgd_yeast), 
+  SIMPLIFY = FALSE
+)
+
+# all in a single table
+df_all_yeast <- plyr::ldply(list_dfs_yeast, identity, .id = "threshold") %>% 
+  dplyr::mutate(threshold = as.ordered(threshold))
+```
+
+## Statistical moments
+
+### Expected value
+
+When representing the reference expected value $b_{\mu}^{\mathcal{K}}(i)$, the trends in figure \@ref(fig:yeast-ebias-threshold) suggested that it tended to become extreme and hit the minimum and maximum values for many nodes, see also figure \@ref(fig:yeast-ebias-scatter).
+
+```{r yeast-ebias-threshold, fig.pos = 'h', fig.cap='Reference expected value, by filtering setting, in the yeast network.'}
+subset(df_all_yeast) %>%
+  ggplot(aes(x = threshold, y = ebias, fill = Location)) +
+  geom_boxplot() +
+  scale_fill_rickandmorty() +
+  xlab("Confidence threshold when filtering") +
+  ylab(ebias_text) +
+  gg_def
+```
+
+Stratifying by the statistical background and plotting the reference expected value $b_{\mu}^{\mathcal{K}}(i)$ as a function of the PageRank centrality suggests a certain influence from the latter (figure \@ref(fig:yeast-ebias-pr)), especially in the nodes within the statistical background.
+
+```{r yeast-ebias-pr, fig.pos = 'h', fig.cap='Reference expected value, by filtering setting and statistical background (inside/outside labelled nodes, different backgrounds identified by colour).', fig.width=6, fig.height=6}
+ggplot(subset(df_all_yeast), aes(x = pagerank, y = ebias, colour = bkgd)) + 
+  geom_point(aes(), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(log(x))) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(Location ~ threshold) +
+  scale_colour_simpsons() +
+  xlab("PageRank centrality") +
+  ylab(ebias_text) +
+  gg_def
+```
+
+
+```{r yeast-ebias-scatter, fig.pos = 'h', fig.cap='Scatterplot of expected value bias of medium versus high filtering settings, in the yeast network.'}
+df_all_yeast %>%
+  dplyr::select(id, ebias, threshold, Location, bkgd) %>%
+  tidyr::spread(key = threshold, value = ebias) %>%
+  ggplot(aes(x = Threshold_medium, y = Threshold_high)) + 
+  geom_abline(intercept = 0, slope = 1, lty = 2, colour = "gray70") +
+  geom_point(size = .3) +
+  # stat_density_2d() +
+  geom_smooth(method = "lm", colour = "indianred1") +
+  scale_colour_distiller(palette = "Spectral") +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_wrap(~Location) +
+  gg_def
+```
+
+
+
+```{r}
+# Description of the $b_{\mu}^{\mathcal{K}}(i)$ differences through an additive quasi-binomial model (since it appears bounded between $0$ and $1$):
+# glm gi
+# lm_ebias_yeast <- glm(
+#   # ebias ~ Location + log10(degree + 1) + Location*threshold,
+#   ebias ~ Location + pagerank + Location*threshold + bkgd,
+#   data = df_all_yeast
+# )
+# 
+# summary(lm_ebias_yeast)
+```
+
+```{r}
+# plot(lm_ebias_yeast)
+```
+
+```{r}
+df_wide_yeast <- df_all_yeast %>%
+  dplyr::select(id, ebias, threshold, inbkgd, bkgd) %>%
+  tidyr::spread(key = threshold, value = ebias) 
+```
+
+Changes in $b_{\mu}^{\mathcal{K}}(i)$ were formally tested through a paired Wilcoxon test with a normal approximation for large sample sizes, see `?wilcox.test`.
+Specifically, when comparing the medium and the high confidence in the yeast interactome, we found that the nodes belonging to the statistical background showed a significant increase in $b_{\mu}^{\mathcal{K}}(i)$:
+
+```{r}
+with(subset(df_wide_yeast, inbkgd), 
+     wilcox.test(x = Threshold_medium, 
+                 y = Threshold_high, 
+                 paired = TRUE,
+                 exact = FALSE, 
+                 conf.int = TRUE, 
+                 alternative = "less"))
+```
+
+And a significant decrease in the nodes outside the background:
+
+```{r}
+with(subset(df_wide_yeast, !inbkgd), 
+     wilcox.test(x = Threshold_medium, 
+                 y = Threshold_high, 
+                 paired = TRUE,
+                 exact = FALSE, 
+                 conf.int = TRUE, 
+                 alternative = "greater"))
+```
+
+To recapitulate, we observed:
+  
+* Labelled nodes: they tended to increase their expected values. 
+Probably because the proportion of connections to the unlabelled nodes was lowering, therefore more flow stayed in the labelled part.
+* Unlabelled nodes: analogously, the expected values were lowering with higher filtering.
+
+### Variance
+
+A similar trend was found in the reference variances $b_{\sigma^2}^{\mathcal{K}}(i)$ (figure \@ref(fig:yeast-vbias-threshold)).
+For clarity, the nodes with $0$ variance (i.e. with constant scores) were imputed the minimum variance, otherwise $b_{\sigma^2}^{\mathcal{K}}(i)$ would be undefined.
+
+```{r yeast-vbias-threshold, fig.pos = 'h', fig.cap='Reference variance, by filtering setting, in the yeast network.'}
+subset(df_all_yeast) %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  ggplot(aes(x = threshold, y = vbias.finite, fill = Location)) +
+  geom_boxplot() +
+  scale_fill_rickandmorty() +
+  xlab("Confidence threshold when filtering") +
+  ylab(vbias_text) +
+  gg_def
+```
+
+
+
+### Expected value versus variance
+
+The relationship between $b_{\mu}^{\mathcal{K}}(i)$ and $b_{\sigma^2}^{\mathcal{K}}(i)$ seemed positive and nonlinear, as displayed in figure \@ref(fig:yeast-ebias-vs-vbias).
+Plotted are curves with a linear plus a logarithmic term, separated by statistical background.
+
+```{r yeast-ebias-vs-vbias, fig.pos = 'h', fig.cap='Reference expected value versus reference variance in the yeast network, by confidence threshold, statistical background (inside or outside the background, and which label used to define it). The fits include a logarithmic term, .i.e. $y = a_0 + a_1x + a_2log(x)$.', fig.width=6, fig.height=6}
+ggplot(subset(df_all_yeast), aes(x = ebias, y = vbias, colour = bkgd)) + 
+  geom_point(aes(), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(log(x))) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(Location ~ threshold) +
+  scale_colour_simpsons() +
+  xlab(ebias_text) +
+  ylab(vbias_text) +
+  gg_def
+```
+
+
+## Summary and interpretation
+
+1. Expected values tended to increase in labelled nodes (less connections, therefore they were prone to retain the flow), while they decreased in unlabelled nodes (they received less flow from the labelled nodes).
+2. Variances increased in labelled nodes and decreased in unlabelled nodes.
+3. Both effects were more extreme in loosely connected genes, likely resembling a binary connect/disconnect state.
+
+
+
+# BioGRID human network
+
+## General description
+
+The BioGRID human interactome [@biogrid2017] that was used for the prospective pathway gene prediction was weighted according to confidence criteria described elsewhere [@pathways_confidence_dsd].
+Weights were a function of the number of supporting publications and their technology.
+A summary of the weights (the higher, the better) can be found below and represented in figure \@ref(fig:yeast-ebias-vs-vbias):
+
+```{r}
+summary(E(g_biogrid)$weight)
+
+# based on the distribution of edge weights for biogrid
+ref_weights_biogrid <- c(0, .3, .9) %>%
+  setNames(paste0("Threshold_", format(., 1)))
+```
+
+```{r biogrid-weights, fig.pos = 'h', fig.cap='Histogram of the confidence weights in the BioGRID network.'}
+ggplot(data.frame(weight = E(g_biogrid)$weight), aes(x = weight)) +
+  geom_histogram() +
+  xlab("Edge weight") +
+  ylab("Counts") +
+  gg_def
+```
+
+Therefore, three scenarios were defined: medium, medium-high, and high confidence, corresponding to thresholds of `r ref_weights_biogrid`.
+
+```{r}
+list_biogrid <- plyr::llply(
+  ref_weights_biogrid, 
+  function(th) {
+    e.rm <- E(g_biogrid)[weight < th]
+    g <- igraph::delete.edges(g_biogrid, e.rm)
+    
+    g
+  }
+)
+
+df_stats_biogrid <- plyr::ldply(list_biogrid, describe_net, .id = "confidence")
+```
+
+Most notably, medium-high and high confidence dropped the size of the largest connected component from $`r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[1])$largestcc`$ to `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[2])$largestcc` and `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[3])$largestcc`. 
+Due to this dramatic change, the largest network was the default option for the main analysis.
+The most stringent filtering also creates `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[3])$isolated` isolated nodes, i.e. more than half of them.
+
+```{r}
+df_stats_biogrid[c("confidence", "vc", "ec", "ccs", "largestcc", "isolated", "leaves")] #%>% t %>% as.data.frame
+```
+
+## Defining the background
+
+```{r}
+list_bkgd_biogrid <- list(kegg = unique(unlist(kegg2011)))
+```
+
+Again, to create differences in expected values, the union of the genes in the KEGG pathways [@kegg2017] in 2011 was used as the statistical background, consisting of `r length(list_bkgd_biogrid$kegg)` genes.
+
+## Kernels and statistics
+
+After generating both graph kernels, the statistical moments were computed for each statistical background.
+
+```{r}
+list_rds_biogrid <- paste0(dir_kernels, "/biogrid_", names(list_biogrid), ".rds")
+
+list_dfs_biogrid <- mapply(
+  generate_kernel_and_stats, 
+  g = list_biogrid, 
+  filename = list_rds_biogrid, 
+  MoreArgs = list(list_bkgd = list_bkgd_biogrid), 
+  SIMPLIFY = FALSE
+)
+
+# all in a single table
+df_all_biogrid <- plyr::ldply(list_dfs_biogrid, identity, .id = "threshold") %>% 
+  dplyr::mutate(threshold = as.ordered(threshold))
+```
+
+## Statistical moments
+
+### Expected value
+
+Again, the reference expected value $b_{\mu}^{\mathcal{K}}(i)$, moved to the extremes as the filtering increased (figure \@ref(fig:biogrid-ebias-threshold)), with some nodes collapsing to zero or to one (respectively inside and outside the statistical background, see figure \@ref(fig:biogrid-ebias-scatter)).
+
+```{r biogrid-ebias-threshold, fig.width=5, fig.height=5, fig.pos = 'h', fig.cap='Reference expected value, by filtering setting, in the BioGRID human network.'}
+subset(df_all_biogrid) %>%
+  ggplot(aes(x = threshold, y = ebias, fill = Location)) +
+  geom_boxplot() +
+  scale_fill_rickandmorty() +
+  xlab("Confidence threshold when filtering") +
+  ylab(ebias_text) +
+  gg_def
+```
+
+```{r biogrid-ebias-scatter, fig.pos = 'h', fig.cap='Scatterplot of expected value bias of medium versus high filtering settings in the BioGRID network.'}
+df_all_biogrid %>%
+  dplyr::select(id, ebias, threshold, Location) %>%
+  tidyr::spread(key = threshold, value = ebias) %>%
+  ggplot(aes(x = Threshold_0.0, y = Threshold_0.3)) + 
+  geom_abline(intercept = 0, slope = 1, lty = 2, colour = "gray70") +
+  geom_point(size = .3) +
+  # geom_density_2d() +
+  geom_smooth(method = "lm", colour = "indianred1") +
+  scale_colour_distiller(palette = "Spectral") +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_wrap(~Location) +
+  coord_fixed() +
+  gg_def
+```
+
+```{r}
+# glm gi
+# lm_ebias_biogrid <- glm(
+#   # ebias ~ Location + log10(degree + 1) + Location*threshold,
+#   ebias ~ Location + pagerank + Location*threshold,
+#   data = df_all_biogrid
+# )
+# 
+# summary(lm_ebias_biogrid)
+```
+
+```{r}
+# plot(lm_ebias_yeast)
+```
+
+```{r}
+df_wide_biogrid <- df_all_biogrid %>%
+  dplyr::select(id, ebias, threshold, inbkgd) %>%
+  tidyr::spread(key = threshold, value = ebias) 
+```
+
+Paired Wilcoxon tests between medium (no threshold) and medium-high (threshold of 0.3) showed a significant increase in nodes in the background:
+
+```{r}
+with(subset(df_wide_biogrid, inbkgd), 
+     wilcox.test(x = Threshold_0.0, 
+                 y = Threshold_0.3, 
+                 paired = TRUE,
+                 exact = FALSE, 
+                 conf.int = TRUE, 
+                 alternative = "less"))
+```
+
+And a significant decrease in the nodes outside the background:
+
+```{r}
+with(subset(df_wide_biogrid, !inbkgd), 
+     wilcox.test(x = Threshold_0.0, 
+                 y = Threshold_0.3, 
+                 paired = TRUE,
+                 exact = FALSE, 
+                 conf.int = TRUE, 
+                 alternative = "greater"))
+```
+
+The same conclusions were drawn for when comparing medium-high to high confidence only (threshold of 0.9).
+For the nodes inside the background:
+
+```{r}
+with(subset(df_wide_biogrid, inbkgd), 
+     wilcox.test(x = Threshold_0.3, 
+                 y = Threshold_0.9, 
+                 paired = TRUE,
+                 exact = FALSE, 
+                 conf.int = TRUE, 
+                 alternative = "less"))
+```
+
+And the nodes outside it:
+
+```{r}
+with(subset(df_wide_biogrid, !inbkgd), 
+     wilcox.test(x = Threshold_0.3, 
+                 y = Threshold_0.9, 
+                 paired = TRUE,
+                 exact = FALSE, 
+                 conf.int = TRUE, 
+                 alternative = "greater"))
+```
+
+### Variance
+
+Like for the yeast network, the reference variances $b_{\sigma^2}^{\mathcal{K}}(i)$ tended to the extremes as well (figure \@ref(fig:biogrid-vbias-threshold)).
+For clarity, the nodes with 0 variance (i.e. with constant scores) were imputed the minimum variance, otherwise $b_{\sigma^2}^{\mathcal{K}}(i)$ would be undefined.
+The undefined values were replaced with the minimum value `r min(df_all_biogrid$vbias %>% subset(is.finite(.))) %>% signif(3)`.
+
+```{r biogrid-vbias-threshold, fig.width=5, fig.height=5, fig.pos = 'h', fig.cap='Reference variance, by filtering setting, in the BioGRID network.'}
+subset(df_all_biogrid) %>%
+  dplyr::mutate(vbias.finite = ifelse(is.finite(vbias), vbias, Inf), 
+                vbias.finite = ifelse(is.finite(vbias.finite), vbias, min(vbias.finite))) %>%
+  ggplot(aes(x = threshold, y = vbias.finite, fill = Location)) +
+  geom_boxplot() +
+  scale_fill_rickandmorty() +
+  xlab("Confidence threshold when filtering") +
+  ylab(vbias_text) +
+  gg_def
+```
+
+### Expected value versus variance
+
+The positive relationship between $b_{\mu}^{\mathcal{K}}(i)$ and $b_{\sigma^2}^{\mathcal{K}}(i)$ in yeast was replicated in the human interactome (see figure \@ref(fig:biogrid-ebias-vs-vbias)).
+
+```{r, biogrid-ebias-vs-vbias, fig.pos = 'h', fig.cap='Reference expected value versus reference variance in the BioGRID network, by confidence threshold, statistical background (inside or outside the background). The fits include a logarithmic term, .i.e. $y = a_0 + a_1x + a_2log(x)$.', fig.width=6, fig.height=5.5}
+ggplot(subset(df_all_biogrid), aes(x = ebias, y = vbias)) + 
+  geom_point(aes(), size = .1) +
+  geom_smooth(method = "lm", formula = y ~ x + I(log(x))) +
+  # geom_smooth(method = "glm", method.args = list(family = binomial)) +
+  facet_grid(Location ~ threshold) +
+  scale_colour_simpsons() +
+  gg_def
+```
+
+\clearpage
+
+# Reproducibility
+
+```{r}
+sessionInfo()
+```
+
+\clearpage
+
+# References
+
