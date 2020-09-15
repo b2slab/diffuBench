@@ -19,6 +19,8 @@ source("aux_param2name.R")
 
 # network and pathways
 load(file_graph)
+
+dir.create(dir_simul)
 ```
 
 
