@@ -16,7 +16,9 @@ dir_main <- "10_main"
 
 ### main analysis
 file_kernel <- "~/big/devel/big/diffusion/kernell_dlbcl.RData"
-threshold_fdr <- .1
+# changed single fdr to two possibilities
+# threshold_fdr <- .1
+list_fdr <- c(.1, .05)
 n.perm <- 1000
 # methods to screen
 list_methods <- c("raw", "ml", "gm", "ber_s", "ber_p", "mc", "z")
@@ -39,4 +41,14 @@ r <- c(.3, .5, .7)
 # number of pathways
 k <- c(1, 3, 5, 10)
 # maximum p-value
-pmax <- c(1e-2, 1e-3, 1e-4, 1e-5) 
+pmax <- c(1e-2, 1e-3, 1e-4, 1e-5)
+
+# # debug only - minimal amount of simulations
+# # number of signals to generate
+# n_trials <- 2
+# # proportion of affected genes
+# r <- c(.3, .5)
+# # number of pathways
+# k <- c(1, 3)
+# # maximum p-value
+# pmax <- c(1e-3, 1e-4) 
