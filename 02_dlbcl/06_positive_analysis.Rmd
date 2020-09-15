@@ -25,6 +25,8 @@ source("params.R")
 
 load(file_graph)
 load(file_kernel)
+
+dir.create(dir_positive)
 ```
 
 
