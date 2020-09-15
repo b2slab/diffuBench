@@ -295,7 +295,7 @@ group_by(df_bias_pr, obs_label, array, Prior) %>%
 ## Diffusion inputs
 
 In order to binarise the labels for the diffusion, the false discovery rate, or FDR [@fdr], of the _labelled_ nodes was computed.
-_Labelled_ nodes were defined as positive if their FDR was below `r param$threshold_fdr` and negative otherwise. 
+_Labelled_ nodes were defined as positive if their FDR was below $\{`r param$list_fdr`\}$ (multiple thresholds were tried) and negative otherwise. 
 Nodes from the _unlabelled_ pool were naturally deemed unlabelled for the diffusion process. 
 
 Note that the input could contain false positives due to false positives in hypothesis testing.
@@ -331,7 +331,7 @@ The remaining baselines were `pagerank`, a centrality measure that ignored every
 The metrics AUROC and AUPRC were modelled through dispersion-adjusted quasibinomial logit models, see `?stats::quasibinomial` in an R console:
 
 $$ \textrm{metric} \sim \textrm{method} + \textrm{method:strat} + \textrm{array} + 
-k + r + p_{max}  $$
+k + r + p_{max} + \textrm{fdr} $$
 
 All the variables were treated as categorical. 
 The interaction term `method:strat` ensured that methods were allowed to have differential performance in the _labelled_, _unlabelled_ and _overall_ node stratifications. 
@@ -342,7 +342,7 @@ Each model is described in its own section.
 
 ```{r, results='asis'}
 mod_auroc <- glm(
-  auroc ~ method + method:strat + k + r + pmax + array, 
+  auroc ~ method + method:strat + k + r + pmax + array + fdr, 
   data = filter(df_mod, pmax != "1e-05" & k != "10"), 
   family = quasibinomial(link = "logit"))
 
@@ -386,7 +386,7 @@ Contrary to AUROC, AUPRC (see table \@ref(tab:mod-auprc)) was more informative f
 
 ```{r, results='asis'}
 mod_auprc <- glm(
-  auprc ~ method + method:strat + k + r + pmax + array, 
+  auprc ~ method + method:strat + k + r + pmax + array + fdr, 
   data = filter(df_mod, pmax != "1e-05" & k != "10"), 
   family = quasibinomial(link = "logit"))
 
