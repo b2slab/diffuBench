@@ -30,9 +30,13 @@ library(ggplot2)
 library(ggsci)
 
 source("params.R")
-
 files_signal <- list.files(dir_simul)
 stopifnot(length(files_signal) > 0)
+
+dir.create(dir_scores)
+dir.create(dir_models)
+dir.create(dir_stats)
+
 ```
 
 ## Network and kernel
@@ -86,147 +90,155 @@ plyr::l_ply(
         file.load <- paste0(dir_simul, "/", file_signal)
         load(file = file.load)
         
-        # Binarise input 
-        input <- apply(
-          signal$mat_input[id_obs, ], 
-          2, 
-          function(x) {
-            1*(p.adjust(x, method = "fdr") < threshold_fdr)
-          })
-        
-        # make sure there is at least one column 
-        # with some non-zero data
-        non_empty <- colSums(input) > 0
-        if (sum(non_empty) < 1) return(NULL)
-
-        input <- input[, non_empty]
-        
-        # diffusion scores
-        list_diff <- lapply(
-          setNames(list_methods, list_methods), 
-          function(m) {
-            diffuStats::diffuse(
-              K = K, scores = input, method = m, n.perm = n.perm
-            )
-          }
-        )
-        
-        # baseline: original p-values as a ranker
-        list_diff$original <- -log(signal$mat_input[, non_empty])
-        # baseline: centrality values (pagerank)
-        list_diff$pagerank <- replicate(n = ncol(input), expr = pr) %>% 
-            set_colnames(colnames(input))
-        
-        # dummy random scores
-        # See note on the same procedure in the cross validation
-        # place random seed from hasing
-        seed.index <- digest::digest(file.load) %>% substr(1, 5) %>% strtoi(base = 16)
-        set.seed(seed.index)
-        list_diff$random <- replicate(n = ncol(input), expr = sample(length(pr))) 
-        dimnames(list_diff$random) <- dimnames(list_diff$pagerank) 
-
-        # these files are heavy and is saved in their own directory (git-ignored)
-        save(list_diff, 
-             file = paste0(path_scores_array, "/", file_signal), 
-             compress = "xz")
-        
-        # validate in each background: obs, hid, all
+        # iterate over FDRs
         plyr::l_ply(
-          list_strat, 
-          function(strat) {
-            # browser()
-            # create folderpath_scores_array
-            path_stats_array_strat <- paste0(path_stats_array, "/", strat)
-            dir.create(path_stats_array_strat)
+          list_fdr, 
+          function(threshold_fdr) {
             
-            # vertices in that stratification
-            id_v <- get(strat)
+            # Binarise input 
+            input <- apply(
+              signal$mat_input[id_obs, ], 
+              2, 
+              function(x) {
+                1*(p.adjust(x, method = "fdr") < threshold_fdr)
+              })
             
-            # compute metrics
-            df_auc <- plyr::ldply(
-              list_diff, 
-              function(elem) {
-                # this evaluates by using the auc (default)
-                # the auc is not automatically reversed (1-auc)
-                # i.e. 1s are expected to have higher 
-                # predicted values
-                diffuStats::perf_eval(
-                  prediction = elem[id_v, ], 
-                  validation = signal$mat_validation[id_v, non_empty], 
-                  metric = list(auroc = metric_fun(curve = "ROC"), 
-                                auprc = metric_fun(curve = "PRC"))
+            # make sure there is at least one column 
+            # with some non-zero data
+            non_empty <- colSums(input) > 0
+            if (sum(non_empty) < 2) return(NULL)
+    
+            # message(non_empty, " nonempty cols")
+            input <- input[, non_empty, drop = FALSE]
+            
+            # diffusion scores
+            list_diff <- lapply(
+              setNames(list_methods, list_methods), 
+              function(m) {
+                diffuStats::diffuse(
+                  K = K, scores = input, method = m, n.perm = n.perm
                 )
-              }, 
-              .id = "method"
-            )
-            mat_auc <- reshape2::acast(
-              df_auc, Column ~ method, value.var = "auroc")
-            
-            # wilcox test
-            method_cols <- colnames(mat_auc)
-            n_cols <- length(method_cols)
-            
-            mat_wilcox <- matrix(
-              data = NA_character_, nrow = n_cols, ncol = n_cols, 
-              dimnames = list(method_cols, method_cols))
-            
-            # run the tests and fill the matrix
-            # for's are fast as there are only few iterations
-            grid_method <- expand.grid(
-              seq_along(method_cols), 
-              seq_along(method_cols))
-            
-            for (r in 1:nrow(grid_method)) {
-              met1 <- grid_method[r, 1]
-              met2 <- grid_method[r, 2]
-              
-              # test method1-method2 but not the reciprocal
-              # method2-method1
-              if (met1 < met2) {
-                wil_test <- wilcox.test(
-                  x = mat_auc[, met1], 
-                  y = mat_auc[, met2], 
-                  alternative = "two.sided", 
-                  paired = TRUE, 
-                  conf.int = TRUE, 
-                  conf.level = 0.95
-                )
-                # conf_int
-                est <- wil_test$estimate
-                if (is.na(est)) {
-                  cell <- NA_character_
-                } else {
-                  cell <- paste0(
-                    format(est, digits = 2), 
-                    "[", 
-                    format(wil_test$conf.int[1], digits = 2), 
-                    ",",
-                    format(wil_test$conf.int[2], digits = 2), 
-                    "]"
-                  )
-                }
-                mat_wilcox[met1, met2] <- cell
-                
-                # pvalue (raw)
-                p <- wil_test$p.value
-                if (is.na(p)) p <- NA_character_ # this switches NaN to NA
-                mat_wilcox[met2, met1] <- p
               }
-            }
+            )
             
-            # FDR correction for p-values
-            pvals <- p.adjust(
-              as.numeric(mat_wilcox[lower.tri(mat_wilcox)]), 
-              method = "fdr") 
-            mat_wilcox[lower.tri(mat_wilcox)] <- format(pvals, digits = 3)
+            # baseline: original p-values as a ranker
+            list_diff$original <- -log(signal$mat_input[, non_empty])
+            # baseline: centrality values (pagerank)
+            list_diff$pagerank <- replicate(n = ncol(input), expr = pr) %>% 
+                set_colnames(colnames(input))
             
-            # correlations
-            mat_cor_auc <- cor(x = mat_auc, method = "spearman")
+            # dummy random scores
+            # See note on the same procedure in the cross validation
+            # place random seed from hasing
+            seed.index <- digest::digest(file.load) %>% substr(1, 5) %>% strtoi(base = 16)
+            set.seed(seed.index)
+            list_diff$random <- replicate(n = ncol(input), expr = sample(length(pr))) 
+            dimnames(list_diff$random) <- dimnames(list_diff$pagerank) 
+    
+            # these files are heavy and is saved in their own directory (git-ignored)
+            save(list_diff, 
+                 file = paste0(path_scores_array, "/fdr_", threshold_fdr, ",", file_signal), 
+                 compress = "xz")
             
-            # save metrics
-            save(df_auc, mat_wilcox, mat_cor_auc, 
-                 file = paste0(path_stats_array_strat, 
-                               "/", file_signal))
+            # validate in each background: obs, hid, all
+            plyr::l_ply(
+              list_strat, 
+              function(strat) {
+                # browser()
+                # create folderpath_scores_array
+                path_stats_array_strat <- paste0(path_stats_array, "/", strat)
+                dir.create(path_stats_array_strat)
+                
+                # vertices in that stratification
+                id_v <- get(strat)
+                
+                # compute metrics
+                df_auc <- plyr::ldply(
+                  list_diff, 
+                  function(elem) {
+                    # this evaluates by using the auc (default)
+                    # the auc is not automatically reversed (1-auc)
+                    # i.e. 1s are expected to have higher 
+                    # predicted values
+                    diffuStats::perf_eval(
+                      prediction = elem[id_v, ], 
+                      validation = signal$mat_validation[id_v, non_empty], 
+                      metric = list(auroc = metric_fun(curve = "ROC"), 
+                                    auprc = metric_fun(curve = "PRC"))
+                    )
+                  }, 
+                  .id = "method"
+                )
+                mat_auc <- reshape2::acast(
+                  df_auc, Column ~ method, value.var = "auroc")
+                
+                # wilcox test
+                method_cols <- colnames(mat_auc)
+                n_cols <- length(method_cols)
+                
+                mat_wilcox <- matrix(
+                  data = NA_character_, nrow = n_cols, ncol = n_cols, 
+                  dimnames = list(method_cols, method_cols))
+                
+                # run the tests and fill the matrix
+                # for's are fast as there are only few iterations
+                grid_method <- expand.grid(
+                  seq_along(method_cols), 
+                  seq_along(method_cols))
+                
+                for (r in 1:nrow(grid_method)) {
+                  met1 <- grid_method[r, 1]
+                  met2 <- grid_method[r, 2]
+                  
+                  # test method1-method2 but not the reciprocal
+                  # method2-method1
+                  if (met1 < met2) {
+                    wil_test <- wilcox.test(
+                      x = mat_auc[, met1], 
+                      y = mat_auc[, met2], 
+                      alternative = "two.sided", 
+                      paired = TRUE, 
+                      conf.int = TRUE, 
+                      conf.level = 0.95
+                    )
+                    # conf_int
+                    est <- wil_test$estimate
+                    if (is.na(est)) {
+                      cell <- NA_character_
+                    } else {
+                      cell <- paste0(
+                        format(est, digits = 2), 
+                        "[", 
+                        format(wil_test$conf.int[1], digits = 2), 
+                        ",",
+                        format(wil_test$conf.int[2], digits = 2), 
+                        "]"
+                      )
+                    }
+                    mat_wilcox[met1, met2] <- cell
+                    
+                    # pvalue (raw)
+                    p <- wil_test$p.value
+                    if (is.na(p)) p <- NA_character_ # this switches NaN to NA
+                    mat_wilcox[met2, met1] <- p
+                  }
+                }
+                
+                # FDR correction for p-values
+                pvals <- p.adjust(
+                  as.numeric(mat_wilcox[lower.tri(mat_wilcox)]), 
+                  method = "fdr") 
+                mat_wilcox[lower.tri(mat_wilcox)] <- format(pvals, digits = 3)
+                
+                # correlations
+                mat_cor_auc <- cor(x = mat_auc, method = "spearman")
+                
+                # save metrics
+                save(df_auc, mat_wilcox, mat_cor_auc, 
+                     file = paste0(path_stats_array_strat, 
+                                   "/fdr_", threshold_fdr, ",", file_signal))
+              }
+            )
           }
         )
       }
@@ -270,52 +282,60 @@ df_stats <- plyr::ldply(
         # load generated input (varname = signal)
         load(file = paste0(dir_simul, "/", file_signal))
         
-        # Binarise input 
-        input <- apply(
-          signal$mat_input[id_obs, ], 
-          2, 
-          function(x) {
-            1*(p.adjust(x, method = "fdr") < threshold_fdr)
-          })
-        
-        # make sure there is at least one column 
-        # with some non-zero data
-        non_empty <- colSums(input) > 0
-        if (sum(non_empty) < 1) return(NULL)
-
-        input <- input[, non_empty]
-        
-        # Load the scores
-        load(paste0(path_scores_array, "/", file_signal))
-        
-        # validate in each background: obs, hid, all
+        # iterate over FDRs
         plyr::ldply(
-          setNames(list_strat, list_strat), 
-          function(strat) {
-            # browser()
-            # create folderpath_scores_array
-            # vertices in that stratification
-            id_v <- get(strat)
+          setNames(list_fdr, list_fdr), 
+          function(threshold_fdr) {
+        
+            # Binarise input 
+            input <- apply(
+              signal$mat_input[id_obs, ], 
+              2, 
+              function(x) {
+                1*(p.adjust(x, method = "fdr") < threshold_fdr)
+              })
             
-            # compute metrics
+            # make sure there is at least one column 
+            # with some non-zero data
+            non_empty <- colSums(input) > 0
+            if (sum(non_empty) < 2) return(NULL)
+    
+            input <- input[, non_empty, drop = FALSE]
+            
+            # Load the scores
+            load(paste0(path_scores_array, "/fdr_", threshold_fdr, ",", file_signal))
+            
+            # validate in each background: obs, hid, all
             plyr::ldply(
-              list_diff, 
-              function(elem) {
-                # this evaluates by using the auc (default)
-                # the auc is not automatically reversed (1-auc)
-                # i.e. 1s are expected to have higher 
-                # predicted values
-                diffuStats::perf_eval(
-                  prediction = elem[id_v, ], 
-                  validation = signal$mat_validation[id_v, non_empty], 
-                  metric = list(auroc = metric_fun(curve = "ROC"), 
-                                auprc = metric_fun(curve = "PRC"))
+              setNames(list_strat, list_strat), 
+              function(strat) {
+                # browser()
+                # create folderpath_scores_array
+                # vertices in that stratification
+                id_v <- get(strat)
+                
+                # compute metrics
+                plyr::ldply(
+                  list_diff, 
+                  function(elem) {
+                    # this evaluates by using the auc (default)
+                    # the auc is not automatically reversed (1-auc)
+                    # i.e. 1s are expected to have higher 
+                    # predicted values
+                    diffuStats::perf_eval(
+                      prediction = elem[id_v, ], 
+                      validation = signal$mat_validation[id_v, non_empty], 
+                      metric = list(auroc = metric_fun(curve = "ROC"), 
+                                    auprc = metric_fun(curve = "PRC"))
+                    )
+                  }, 
+                  .id = "method"
                 )
               }, 
-              .id = "method"
+              .id = "strat"
             )
           }, 
-          .id = "strat"
+          .id = "fdr"
         )
       }, 
       .id = "file"
@@ -370,7 +390,7 @@ plyr::d_ply(
                          ".txt")
     
     mod_logistic <- glm(
-      auroc ~ method + k + r + pmax, 
+      auroc ~ method + k + r + pmax + fdr, 
       data = df, 
       family = quasibinomial(link = "logit"))
     # summary(mod_logistic)
@@ -381,7 +401,7 @@ plyr::d_ply(
     )
     
     mod_logistic <- glm(
-      auprc ~ method + k + r + pmax, 
+      auprc ~ method + k + r + pmax + fdr, 
       data = df, 
       family = quasibinomial(link = "logit"))
     # summary(mod_logistic)
@@ -400,7 +420,7 @@ plyr::d_ply(
 df_bigmod <- filter(df_mod, pmax != "1e-05" & k != "10")
 
 mod_big_auprc <- glm(
-  auprc ~ method + method:strat + k + r + pmax + array, 
+  auprc ~ method + method:strat + k + r + pmax + array + fdr, 
   data = filter(df_mod, pmax != "1e-05" & k != "10"), 
   family = quasibinomial(link = "logit"))
 
