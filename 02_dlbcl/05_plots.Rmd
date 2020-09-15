@@ -16,6 +16,8 @@ library(ggsci)
 
 source("params.R")
 load(paste0(dir_models, "/df_mod.RData"))
+
+dir.create(dir_plots)
 ```
 
 # Plot AUROC / AUPRC
@@ -27,12 +29,13 @@ plyr::l_ply(
     # iterate over values of pmax
     plyr::d_ply(
       df_mod, 
-      c("array", "strat", "pmax"), 
+      c("array", "strat", "pmax", "fdr"), 
       function(df) {
         # browser()
         pm <- df$pmax[1]
         arr <- df$array[1]
         strat <- df$strat[1]
+        fdr <- df$fdr[1]
         
         g <- ggplot(df, aes_string(y = metric, x = "method")) + 
           # geom_hline(yintercept = .5, color = "red", alpha = .7) + 
@@ -54,7 +57,7 @@ plyr::l_ply(
           
         
         out_name <- paste0(
-          dir_plots, "/", metric, ",array_", arr, ",", strat, ";pmax_", 
+          dir_plots, "/", metric, ",array_", arr, ",", strat, ";fdr_", fdr, ",pmax_", 
           format(as.numeric(as.character(pm)), scientific = TRUE), ".png"
         )
         
