@@ -440,7 +440,7 @@ df_auprc %>%
 ```
 
 \clearpage
-Below are the results of the statistical test between `raw` and `z` that back up the claims in this section.
+Below are the results of the statistical test (Tukey's method) between `raw` and `z` that back up the claims in this section.
 
 ```{r}
 contrast_auprc <- emmeans::contrast(emm_auprc, method = "pairwise")
