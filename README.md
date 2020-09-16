@@ -36,47 +36,50 @@ Reports may include bibliographical entries (`*.bib`).
 diffuBench
 ├── 00_metadata
 ├── 00_packages:                    source code for custom packages
-│   ├── diffuStats_0.99.9.tar.gz
-│   └── retroData_0.0.2.tar.gz
+│   ├── diffuStats_0.99.9.tar.gz      older version of diffuStats (newest in Bioconductor) 
+│   └── retroData_0.0.2.tar.gz        data package
+├── 00_networkCuration:             study of the impact of filtering edges by confidence
+│   ├── 10_bibliography.bib
+│   └── 10_supplement.Rmd:            supplementary material report
 ├── 00_properties:                  study of the mathematical properties
 │   ├── 00_metadata
-│   ├── 01_equivalences.Rmd:        explore equivalences between scores
-│   ├── 02_spectral_properties.Rmd: plot spectral properties of null covariance
+│   ├── 01_equivalences.Rmd:          explore equivalences between scores
+│   ├── 02_spectral_properties.Rmd:   plot spectral properties of null covariance
 │   └── params.R
 ├── 01_synthetic:                   case study of synthetic signals on a yeast network
 │   ├── 10_bibliography.bib
-│   ├── 10_synth_yeast.Rmd:         supplementary material report
+│   ├── 10_synth_yeast.Rmd:           supplementary material report
 │   ├── aux_generate_input.R
 │   └── params.R
 ├── 02_dlbcl:                       case study of synthetic gene expression in a human interactome
 │   ├── 00_metadata
-│   ├── 01_analysis.Rmd:            prepare interactome and KEGG data
-│   ├── 01_kegg:                    tables from the KEGG database
-│   ├── 02_kernel.Rmd:              compute graph kernel
-│   ├── 03_generateInputs.Rmd:      compute synthetic differential gene expression
-│   ├── 04_computeScores.Rmd:       compute propagation scores and fit regression models
-│   ├── 05_plots.Rmd:               plot the metrics
-│   ├── 06_positive_analysis.Rmd:   study the properties of the pathway nodes (positives)
+│   ├── 01_analysis.Rmd:              prepare interactome and KEGG data
+│   ├── 01_kegg:                      tables from the KEGG database
+│   ├── 02_kernel.Rmd:                compute graph kernel
+│   ├── 03_generateInputs.Rmd:        compute synthetic differential gene expression
+│   ├── 04_computeScores.Rmd:         compute propagation scores and fit regression models
+│   ├── 05_plots.Rmd:                 plot the metrics
+│   ├── 06_positive_analysis.Rmd:     study the properties of the pathway nodes (positives)
 │   ├── 10_bibliography.bib 
-│   ├── 10_main:                    figures for the main body
-│   ├── 10_supplement.Rmd:          supplementary file report
+│   ├── 10_main:                      figures for the main body
+│   ├── 10_supplement.Rmd:            supplementary file report
 │   ├── aux_deepestdir.R
 │   ├── aux_param2name.R
 │   ├── aux_sample_genes.R
 │   └── params.R
 ├── 03_retroData:                   case study of prospective pathway prediction
 │   ├── 00_metadata
-│   ├── 01_descriptive.Rmd:         data preprocessing and description
-│   ├── 02_diffusion_scores.Rmd:    computation of diffusion scores
-│   ├── 03_statistics.Rmd:          metrics and rankings
-│   ├── 04_plots.Rmd:               regression models and plotting
+│   ├── 01_descriptive.Rmd:           data preprocessing and description
+│   ├── 02_diffusion_scores.Rmd:      computation of diffusion scores
+│   ├── 03_statistics.Rmd:            metrics and rankings
+│   ├── 04_plots.Rmd:                 regression models and plotting
 │   ├── 10_bibliography.bib
-│   ├── 10_main:                    figures for the main body
-│   ├── 10_supplement.Rmd:          supplementary file report
+│   ├── 10_main:                      figures for the main body
+│   ├── 10_supplement.Rmd:            supplementary file report
 │   ├── aux_compute_partitions.R
 │   └── params.R
 ├── 04_networkCuration:             study of the filtering effect in the null models
-│   └── 01_descriptive_biogrid.Rmd: generation of kernels for varying filterings
+│   └── 01_descriptive_biogrid.Rmd:   generation of kernels for varying filterings
 ├── 0a_network_choice.Rmd:          complementary files to choose the synthetic network models 
 ├── .gitignore:                     exclude some filetypes from version control
 ├── helper_funs.R:                  functions for small calculations and plotting 
@@ -159,7 +162,7 @@ You might want to change those to somewhere convenient in your machine.
 Now simply run
 
 ```bash
-make props demos s1 s2 s3
+make props demos filters s1 s2 s3
 ```
 
 This would take up to one day to rebuild everything on our machine.
