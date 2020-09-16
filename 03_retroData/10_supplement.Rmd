@@ -74,12 +74,21 @@ load(param$file_dataset)
 load(paste0(param$dir_data, "/props_dataframes.RData"))
 
 # Scores
-load(paste0(param$dir_scores, "/all.RData"))
-
+load(paste0(param$dir_scores, "/Threshold_0.0.RData"))
 
 # Models data frame
-load(paste0(param$dir_stats, "/auc_all.RData"))
-load(paste0(param$dir_stats, "/ranking_all.RData"))
+load(paste0(param$dir_stats, "/auc_Threshold_0.0.RData"))
+load(paste0(param$dir_stats, "/ranking_Threshold_0.0.RData"))
+
+# Data frame with all the AUROCs
+files_stats <- list.files(path = param$dir_stats, pattern = "*auc_Threshold*")
+df_auc_all <- plyr::ldply(
+  setNames(files_stats, files_stats), function(x) {
+    load(paste0(param$dir_stats, "/", x))
+    df_auc
+  }, .id = "Threshold"
+) %>%
+  dplyr::mutate(threshold = gsub("(auc_)(Threshold_.*)(\\.RData)", "\\2", Threshold))
 ```
 
 
@@ -97,7 +106,8 @@ summary(g.network)
 ```
 
 The network contained $`r format(vcount(g.network))`$ nodes and $`r format(ecount(g.network))`$ edges and was connected by construction (only the largest connected component was kept). 
-The edges weights are displayed in figure \@ref(fig:edge-weights), revealing two broad categories: low-confidence ones, with a weight of $0.25$, and high-confidence ones, with a weight of $0.8$ or higher. 
+The edges weights are displayed in figure \@ref(fig:edge-weights), revealing two broad categories: low-confidence ones, with a weight of $0.25$, and medium/high-confidence ones, with a weight of $0.8$ or higher. 
+A dedicated section examines the impact of filtering out lower confidence edges.
 
 ```{r edge-weights, fig.pos = 'h', fig.cap='Distribution of the edge weights in the BioGRID network.'}
 ggplot(data.frame(weight = E(g.network)$weight), aes(x = weight)) + 
@@ -491,6 +501,74 @@ contrast(emt_interaction_auprc, method = "pairwise")
 
 \clearpage
 
+## Effect of network confidence filtering
+
+The effect on changing the filtering criteria for the network interactions can impact downstream analyses and performance metrics. 
+Here, the following scenarios were considered:
+
+* All confidences, i.e. no filtering: `Threshold = 0.0`
+* Medium-high confidence, moderate filtering: `Threshold = 0.3`
+* High confidence, aggressive filtering: `Threshold = 0.9`
+
+Filtering edges would not only reduce noise but also isolate nodes, which in turn would not be predicted as positives by network propagation.
+To confirm whether the noise reduction outweighed the decreased coverage for network propagation, the AUROC for `raw` and `z` was computed in the three scenarios and described through the following additive model:
+
+$$ \textrm{auroc} \sim \textrm{method} + \textrm{path\_var\_ref} + \textrm{threshold} $$
+
+```{r}
+df_mod_all <- filter(
+  df_auc_all,
+  partition %in% c("d1g") &
+    size_novelgenes >= 1 &
+    !(method %in% c("ml", "gm", "ber_s"))) %>%
+  mutate(Biased = as.factor(Biased), 
+         Biased_ng5 = size_novelgenes >= 5, 
+         Bias_lognew = log(size_novelgenes)) %>% 
+  join(select(df_bias_path, pathway, median_new, median_other)) %>% 
+  mutate(path_var_ref = as.numeric(median_new - median_other))
+```
+
+Table \@ref(tab:mod-auroc-thresholds) summarises the AUROC model, which suggests that the stronger the filtering, the worse the performance. 
+Displaying the actual AUROC values further supports this claim (figure \@ref(fig:auroc-thresholds)).
+
+```{r, results='asis'}
+mod_auroc_thresholds <- glm(
+  auroc ~ method + path_var_ref + threshold,
+  data = subset(df_mod_all, method %in% c("raw", "z")),
+  family = quasibinomial(link = "logit"))
+
+stargazer::stargazer(
+  mod_auroc_thresholds, ci = TRUE, ci.level = 0.95, header = FALSE, 
+  single.row = TRUE, omit.table.layout = "mdl",  label = "tab:mod-auroc-thresholds", 
+  title = "Quasibinomial model for AUROC to quantify the impact of edge filtering")
+```
+
+The 95% confidence intervals on each main effect can be found below: 
+
+```{r}
+# confidence intervals
+df_confint <- confint(mod_auroc_thresholds)
+df_confint
+```
+
+The confidence intervals reveal that the magnitude of the effect of an aggressive filtering (expected to lie in $[`r signif(df_confint["thresholdThreshold_0.9", ], 3)`]$) is quite comparable to that of deciding to normalise the diffusion scores (interval $[`r signif(df_confint["methodz", ], 3)`]$).
+Setting aside the fact that the filtering appears detrimental, this suggests that the decision of normalising the scores can be as impactful as other well-known design factors.
+
+```{r auroc-thresholds, fig.cap='AUROC for all the pathways, comparing raw and z, and stratifying by filtering strategy.', fig.width=5.5, fig.height=2.5}
+ggplot(subset(df_mod_all, method %in% c("raw", "z")), aes(x = method, y = auroc)) + 
+  geom_hline(yintercept = .5, lty = 3, colour = "gray50") + 
+  geom_boxplot(aes(fill = method), outlier.shape = NA, width = .5) + 
+  geom_jitter(aes(fill = method), colour = "black", pch = 21, width = 0.15, size = 1) +
+  scale_fill_manual(values = colour_npg, guide = FALSE) +
+  scale_colour_manual(values = colour_npg, guide = FALSE) +
+  facet_wrap(~threshold) +
+  xlab("Method") + 
+  ylab("Pathway-wise AUROC") + 
+  gg_def
+```
+
+\clearpage
+
 ## Other remarks
 
 The present case study served as an illustrative example of variance-related bias in diffusion scores. 
@@ -504,6 +582,8 @@ The counterintuitive nature of this bias encourages an additional layer of cauti
 In this particular instance, `z` outperformed `raw`.
 * For all the methods, new positives with higher variances were harder to recover, although this was less pronounced in `z`. 
 High variance nodes tended to have a low degree, so we speculate that the network was incomplete when describing their biology, thus limiting the performance in their respective pathways.
+* Filtering lower-confidence edges was detrimental and therefore not done by default in the main analysis.
+* In this use case, the impact of the statistical normalisation in the performances was comparable, in absolute terms, to that of choosing an aggressive filtering strategy that drops roughly two thirds of the network edges.
 
 ```{r, results='hide'}
 # figures for the main body
