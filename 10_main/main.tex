@@ -75,6 +75,8 @@ Its theoretical basis revolves around graph spectral theory, graph kernels and r
 The central concept is that nodes carry abstract labels that, following the guilt by association principle, are propagated to the neighbouring nodes \citep{labelpropagation}. 
 Unlabelled nodes can therefore be inferred a label based on the available data of their neighbours.
 Label propagation can be defined in several ways, such as the heat diffusion, the electrical model or random walks with restarts (RWR), some of which lead to equivalent formulations \citep{cowen2017network}. 
+While this article tackles classical propagation methods, there are more recent and sophisticated algorithms that can alleviate their shortcomings.
+Those include adaptive diffusion \citep{jiang2017aptrank}, nonlinear diffusions for semi-supervised graph learning \citep{ibrahim2019nonlinear}, graph convolutional neural networks \citep{sun2020graph} and graph embeddings \citep{grover2016node2vec}.
 
 One of the most common diffusion formulations relies on the regularised Laplacian graph kernel \citep{smola} - examples are provided throughout this paragraph.
 HotNet \citep{hotnet} is a tool for finding modules with a statistically high number of mutated genes in cancer, after propagating the labels of mutated genes.
@@ -210,7 +212,7 @@ Case & Network & Positive nodes & Signal & Bias type & Purpose & Explanatory mod
 \showrowcolors
 (1) & Yeast & Synthetic & Synthetic, bias-based & Mean value & Proof of concept & $\mathrm{Performance} \sim \mathrm{method} + \mathrm{method:biased}  + \mathrm{metric}$
  \\
-(2) & HPRD & KEGG pathways & Pathway sub-sampling & Mean value & Background influence in bias & $\mathrm{AUPRC} \sim \mathrm{method} + \mathrm{method:strat} + \mathrm{array} + k + r + p_{max}$\\
+(2) & HPRD & KEGG pathways & Pathway sub-sampling & Mean value & Background influence in bias & $\mathrm{AUPRC} \sim \mathrm{method} + \mathrm{method:strat} + \mathrm{array} + k + r + p_{max} + \mathrm{fdr} $\\
 (3) & BioGRID & KEGG pathways & Prospective pathway prediction & Variance & Bias in a common scenario & $\mathrm{AUROC} \sim \mathrm{method} + \mathrm{method:path\_var\_ref}$ \\
 \bottomrule
 \end{tabular}
@@ -270,9 +272,9 @@ Genes outside the background were hidden (unlabelled), and genes inside were giv
 
 Each signal derived from $k$ random KEGG pathways. 
 The pathways were assumed to be affected as a whole, but only a sampled portion of $r$ genes showed differential expression patterns. 
-The p-values of the differential expressed genes were uniformly sampled from $[0, p_{max}]$, whereas the rest of genes were uniform in $[0,1]$, following a previously study \citep{pathway_simulation_pvals}.
+The p-values of the differential expressed genes were uniformly sampled from $[0, p_{max}]$, whereas the rest of genes were uniform in $[0,1]$, following a previous study \citep{pathway_simulation_pvals}.
 
-For both expression arrays, genes with an $ \textrm{FDR}<10\% $ within their background were used as positives, the remaining background genes as negatives and the hidden nodes were deemed unlabelled. 
+For both expression arrays, genes with an $ \textrm{FDR}<5\% or 10\% $ within their background were used as positives, the remaining background genes as negatives and the hidden nodes were deemed unlabelled. 
 Notice that, by definition, this procedure generated false positives and false negatives among the input genes. 
 
 The target genes were those belonging to the $k$ affected pathways, including those with no apparent differential expression and those among the unlabelled nodes.
@@ -340,6 +342,9 @@ The $i$-th null variance (eq. \ref{eq:covariance}) can be exactly zero, either b
 In practice, the latter is expected to happen in small connected components without any labelled nodes.
 Both cases render the $i$-th score constant, therefore lacking interest, and leave $f_z$ undefined.
 
+A dedicated analysis revealed that the statistical moments were affected by the pre-filtering of network edges (Supplement 5).
+When removing lower-confidence edges, $\ebias$ tended to increase in the labelled nodes and decrease in the unlabelled ones ($p<10^{-16}$ in six comparisons, two-sided paired Wilcoxon test), thus magnifying the differences between both.
+
 In the retrospective dataset, the reference of a given pathway $P$, conceived to summarise its properties into a single number, was defined by subtracting the median reference of its new genes, $\textrm{new}(P)$ to that of the genes that never belonged to it, $\textrm{others}(P)$:
 
 \begin{equation}\label{eq:bias-var-pathway}
@@ -368,6 +373,8 @@ Lines correspond to Generalised Additive Models with $y \sim s(x, bs = "cs")$ an
 \method{raw} and \method{ml} tended to find positives with high and low $\ebias$,  respectively. 
 \method{z} found positives in a more uniform manner.
 \textbf{(B)} Performance in terms of AUROC and AUPRC.
+The lower and the higher hinges represent the first and third quartiles, with the median indicated by the intermediate bar. 
+The whiskers extend up to 1.5 times the interquantile range from the box, whereas more distant data points are displayed as outliers.
 \method{raw} was better suited for biased signals, for which the \method{pagerank} baseline also outperformed a random predictor. 
 Conversely, \method{z} worked best on unbiased signals. 
 }
@@ -477,6 +484,11 @@ This conclusion did not apply to early retrieval, as it could not be proven for 
 
 The negative sign of the interaction terms was also insightful: all the proper methods encountered more difficulties in finding loosely connected genes.
 This was expected, since there is less network data involving such genes, translating into unreliable predictions.
+
+The impact of removing lower confidence edges was explored in Supplement 4. 
+Moderate and aggressive filtering strategies (confidence thresholds of $0.3$ and $0.9$) lowered the AUROC of \method{raw} and \method{z}, justifying the default option of no filtering.
+Without accounting for the sign, the impact of deciding to normalise was comparable to that of switching to the aggressive filtering (95\% confidence intervals of [0.502, 0.747] and [-0.73, -0.432] in logit scale).
+This suggests that considering the statistical normalisation should be on par with other standard decisions.
 
 \section*{Conclusion}
 
