@@ -1,0 +1,526 @@
+\PassOptionsToPackage{draft}{graphicx}
+\documentclass[final]{bioinfo}
+\copyrightyear{2015} \pubyear{2015}
+
+\access{Advance Access Publication Date: Day Month Year}
+\appnotes{Manuscript Category}
+
+% My commands
+\usepackage{ bbold }
+\usepackage{ dsfont }
+
+\usepackage{float}
+\usepackage[table]{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+%\usepackage[group-separator={,}]{siunitx}
+
+
+\newcommand{\textq}[1]{``#1''}
+\newcommand{\E}{\mathrm{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\method}{\texttt}
+\newcommand{\ebias}{b_{\mu}^{\mathcal{K}}}
+\newcommand{\vbias}{b_{\sigma^2}^{\mathcal{K}}}
+\newcommand{\pbias}{bp_{\sigma^2}^{\mathcal{K}}}
+
+\newcommand{\Rcode}{\texttt}
+
+\begin{document}
+\firstpage{1}
+
+\subtitle{Subject Section}
+
+\title[Statistical normalisation on propagation scores]{The effect of statistical normalisation on network propagation scores}
+\author[S. Picart-Armada \textit{et~al}.]{Sergio Picart-Armada\,$^{\text{\sfb 1,2}*}$, Wesley K. Thompson$^{\text{\sfb 3,4}}$, Alfonso Buil\,$^{\text{\sfb 3}}$ and Alexandre Perera-Lluna\,$^{\text{\sfb 1,2}}$}
+\address{$^{\text{\sf 1}}$B2SLab, Departament d'Enginyeria de Sistemes, Autom\`atica i Inform\`atica Industrial, Universitat Polit\`ecnica de Catalunya, CIBER-BBN, Barcelona, 08028, Spain, $^{\text{\sf 2}}$Institut de Recerca Pedi\`atrica Hospital Sant Joan de D\'eu, Esplugues de Llobregat, Barcelona, 08950, Spain, $^{\text{\sf 3}}$Mental Health Center Sct. Hans, 4000 Roskilde, Denmark and $^{\text{\sf 4}}$Department of Family Medicine and Public Health, University of California, San Diego, La Jolla, California, USA.}
+
+\corresp{$^\ast$To whom correspondence should be addressed.}
+
+\history{Received on XXXXX; revised on XXXXX; accepted on XXXXX}
+
+\editor{Associate Editor: XXXXXXX}
+
+\abstract{
+\textbf{Motivation:} 
+Network diffusion and label propagation are fundamental tools in computational biology, with applications like gene-disease association, protein function prediction and module discovery.  
+More recently, several publications have introduced a permutation analysis after the propagation process, due to concerns that network topology can bias diffusion scores. 
+This opens the question of the statistical properties and the presence of bias of such diffusion processes in each of its applications. 
+In this work, we characterised some common null models behind the permutation analysis and the statistical properties of the diffusion scores.  
+We benchmarked seven diffusion scores on three case studies: synthetic signals on a yeast interactome, simulated differential gene expression on a protein-protein interaction network and prospective gene set prediction on another interaction network. 
+For clarity, all the datasets were based on binary labels, but we also present theoretical results for quantitative labels. 
+\\
+\textbf{Results:}
+Diffusion scores starting from binary labels were affected by the label codification, and exhibited a problem-dependent topological bias that could be removed by the statistical normalisation. 
+Parametric and non-parametric normalisation addressed both points by being codification-independent and by equalising the bias.
+We identified and quantified two sources of bias -mean value and variance- that yielded performance differences when normalising the scores. 
+We provided closed formulae for both and showed how the null covariance is related to the spectral properties of the graph.
+Despite none of the proposed scores systematically outperformed the others, normalisation was preferred when the sought positive labels were not aligned with the bias.
+We conclude that the decision on bias removal should be problem and data-driven, i.e. based on a quantitative analysis of the bias and its relation to the positive entities. \\
+\textbf{Availability:} The code is publicly available at \url{https://github.com/b2slab/diffuBench} \\
+\textbf{Contact:} \href{sergi.picart@upc.edu}{sergi.picart@upc.edu}\\
+\textbf{Supplementary information:} Supplementary data are available at \textit{Bioinformatics} online.
+}
+
+\maketitle
+
+\section{Introduction}
+
+The guilt by association principle states that two proteins that interact with one another are prone to participate in the same, or related, cellular functions \citep{gba}. 
+This cornerstone fact has motivated the exploration of network algorithms on interaction networks for protein function prediction \citep{sharan2007network}. 
+Network analysis has further proven its usefulness in other computational biology problems, such as prioritising candidate disease genes \citep{barabasi2011network}, finding modular structures \citep{diffusionmodules} and modelling organisms \citep{aderem2005systems}.
+
+Network propagation is a fundamental formalism to leverage network data in computational biology. 
+Its theoretical basis revolves around graph spectral theory, graph kernels and random walks \citep{smola}.  
+The central concept is that nodes carry abstract labels that, following the guilt by association principle, are propagated to the neighbouring nodes \citep{labelpropagation}. 
+Unlabelled nodes can therefore be inferred a label based on the available data of their neighbours.
+Label propagation can be defined in several ways, such as the heat diffusion, the electrical model or random walks with restarts (RWR), some of which lead to equivalent formulations \citep{cowen2017network}. 
+
+One of the most common diffusion formulations relies on the regularised Laplacian graph kernel \citep{smola} - examples are provided throughout this paragraph.
+HotNet \citep{hotnet} is a tool for finding modules with a statistically high number of mutated genes in cancer, after propagating the labels of mutated genes.
+The authors in \citep{mosca} have found relevant modules from gene expression and mutation data, based on a diffusion process followed by an automatic subgraph mining.
+GeneMANIA \citep{genemania} is a web server that predicts gene function by optimising a combination of knowledge networks and running a diffusion process on the resulting network. 
+TieDIE \citep{tiedie} defines two diffusion processes in order to connect two sets of genes, applied to link perturbation in the genome with changes in the transcriptome.
+More generally, the predictive power of label propagation using graph kernels has been benchmarked in gene-disease association \citep{valentini, diffusion_gwas, diffusionbenchmark}.
+
+Some studies have pointed out biases in diffusion scores and explored the effect of their removal.
+The authors of DADA \citep{erten2011dada} have found that prioritisation using RWR favours highly connected genes and suggest several normalisation strategies. 
+One of them computes a z-score that adjusts for the mean value and standard deviation estimated from propagation scores from random degree-preserving inputs. 
+Another possibility is to normalise diffusion scores into empirical p-values, as used in the diffusion of $t$-statistics derived from gene expression \citep{smoothedt}.
+The aim was to quantify robust biomarkers, whose diffusion score is unlikely to arise from a permuted input. 
+In the discovery of enriched modules \citep{mosca}, the effect of the topology has been mitigated by combining diffusion scores with their empirical p-values.
+Similarly, exact z-scores and empirical p-values have been used for pathway analysis of metabolomics data \citep{metabopicart}.
+A recent study \citep{biran2019comparative} has normalised RWR into an empirical p-value, obtained from edge rewiring. 
+Specifically, random degree-preserving networks have been built to re-run the propagation and draw values from the null distributions of scores.
+Another recent manuscript \citep{hill2019benchmarking} highlights biases in certain network propagation algorithms, related to the node degree.
+
+Overall, a variety of measures to address the bias have emerged, but a systematic quantification and evaluation of the biases is missing. 
+The normalisation can potentially backfire, for instance by missing highly connected nodes that are associated with the property under study \citep{erten2011dada}. 
+The goal of this manuscript is to provide a quantitative way to assess the presence of the bias and its alignment with the node labels, in order to understand the impact and adequateness of the normalisation. 
+
+\section{Approach}
+
+Here, we address basic statistical properties of the normalisation of single-network diffusion scores to remove topology-related biases. 
+We define and quantify two sources of bias.
+Both are derived from a statistical standpoint, based on the exact means and variances of the null distributions of the diffusion scores under input permutation.
+Differences in mean values between nodes should be the first indicator of systematic advantages: nodes with highest means will often be prioritised over those with lowest means. 
+In their absence, differences in variances should be examined instead, as nodes with highest spread can be more likely to reach extreme scores.
+We compare classical and normalised propagation, as implemented in diffuStats \citep{diffustats}, in data with and without bias.
+The main results are derived for the commonly used regularised Laplacian kernel, although most of them apply to other graph kernels and, to a lesser extent, to random walks with restarts. 
+Special emphasis is placed on identifying scenarios under which normalisation is beneficial or detrimental and on understanding the underlying reasons why.
+
+\begin{methods}
+\section{Methods}
+
+\section*{Diffusion scores}
+
+We include seven diffusion scores that are part of the diffuStats package \citep{diffustats}: $f_{raw}$, $f_{ml}$, $f_{gm}$, $f_{ber_s}$, $f_{mc}$, $f_{z}$ and $f_{ber_p}$. 
+These scores are variations of the original diffusion model with a regularised unnormalised Laplacian kernel \citep{smola}. 
+Labelled nodes are referred to as positives if they have the property of interest, and negatives otherwise. 
+
+\subsection*{Unnormalised scores}
+
+The starting point is the $f_{raw}$ score, which requires a graph kernel $K$ \citep{smola} and input vector $y_{raw}$ and is computed as:
+
+\begin{equation}\label{eq:f-raw}
+    f_{raw} = K y_{raw}
+\end{equation}
+
+This work focuses on the unnormalised, regularised Laplacian kernel for $K$, for being a widespread choice in the computational biology literature (electrical model, heat or fluid propagation).
+The values in $y_{raw}$ reflect the weights of each type of node: $1$ for positives and $0$ for negative and unlabelled entities. 
+
+$f_{ml}$ and $f_{gm}$ differ from $f_{raw}$ by setting a weight of $-1$ on negative nodes. 
+$f_{gm}$ also weighs unlabelled nodes with a bias term adapted from GeneMANIA (not to be confused with the diffusion bias). 
+On the other hand, $f_{ber_s}$ measures the relative change between $f_{raw}$ and $y_{raw}$, with a moderating parameter $\epsilon$: 
+
+\begin{equation}\label{eq:f-ber-s}
+    f_{ber_s}(i) = \frac{f_{raw}(i)}{y_{raw}(i) + \epsilon}
+\end{equation}
+
+\subsection*{Normalised scores}
+
+Normalised scores attempt to equalise nodes that systematically show low or high scores, regardless of the input and due to the specific topology of the network. 
+The lynchpin of normalisation is the null distribution of the diffusion scores under a random permutation $\pi$ of the labelled nodes. 
+The null scores arise from applying $f_{raw}$ to a randomised input $X_{y} = \pi (y_{raw})$ and comparing, for the $i$-th node, $f_{raw}(i)$ to its null distribution $X_f(i)$, where $X_f = K X_y $. 
+An empirical p-value can be computed throught Monte Carlo trials for the $i$-th node on $N$ trials:
+
+\begin{equation}\label{eq:empirical-p}
+    p(i) = \frac{r_i + 1}{N + 1}\,,
+\end{equation}
+
+where $r_i$ is the number of randomised trials having an equal or higher diffusion score in node $i$.
+In order to assign high scores to relevant nodes, the score is defined as $ f_{mc}(i) = 1 - p(i) $. 
+We also include a parametric alternative to $f_{mc}$ by computing z-scores for each node $i$:
+
+\begin{equation}\label{eq:f-z}
+    f_z(i) = \frac{f_{raw}(i) - \E(X_f(i))}{\sqrt{\Var(X_f(i))}}
+\end{equation}
+
+The expected value and variance of the null distributions are analytically determined (see Supplement 1).
+Thus, $f_z$ has a computational advantage over Monte Carlo trials. 
+
+Finally, a hybrid combining an unnormalised and a normalised score is provided, inspired by how \citep{mosca} moderated the effect of hubs: $f_{raw}$: $f_{ber_p}(i) = -\log_{10}(p(i)) f_{raw}(i)$. 
+
+
+\subsection*{Metrics and baselines}
+
+Two baseline methods were used.
+First \method{pagerank}, regarded as an input-na\"ive centrality measure (default damping factor of $0.85$), to measure the predictive power of a basic network property.
+Second, a \method{random} predictor, to set an absolute baseline. 
+Performances were quantified with two metrics: the area under the Receiver Operating Characteristic curve (AUROC) and the area under the Precision-Recall curve (AUPRC), as implemented in the precrec package \citep{precrec}.
+For clarity, the ranking (ordering) of the nodes for any given score and instance was normalised to lie in $[0,1]$ by dividing it by the number of ranked nodes, so that top suggestions corresponded to ranks close to $0$.
+
+\subsection*{Bias quantification}
+
+The reference expected value of the $i$-th node $\ebias(i)$ (eq. \ref{eq:bias-e}) was defined as proportional to the expected value of its null distribution $X_f(i)$ (eq. \ref{eq:expected-value}).
+Reference expected values that vary across nodes can indicate systematic differences in the diffusion scores of such nodes. 
+
+In the absence of differences in the reference expected value, variance-related bias was analysed instead.
+The reference variance of the $i$-th gene $\vbias(i)$ (eq. \ref{eq:bias-var}) was defined as, up to an additive constant, the base $10$ logarithm of the variance of $X_f(i)$, straightforward to obtain from the covariance matrix (eq. \ref{eq:covariance}). 
+The rationale is that the scores of nodes with varying dispersion measures should not be compared directly.
+
+\subsection*{Performance explanatory models}
+
+Explanatory models have found use in the formal description of differences in performance as a function of design factors \citep{lopez2019evaluation,picart2019benchmarking}.
+Following \citep{picart2019benchmarking}, the trends in AUROC and AUPRC were described through logistic-like quasibinomial models with a logit link function, as a generalisation of logistic models to prevent over and under-dispersion issues.
+
+Table~\ref{tab:datasets} presents the main model for each case study. 
+The categorical regressors were: \Rcode{method}, \Rcode{metric} (AUROC or AUPRC), \Rcode{biased} (refers to the signal, true or false), \Rcode{strat} (labelled, unlabelled or overall), \Rcode{array} (ALL or Lym), and the parameters \Rcode{k}, \Rcode{r} and \Rcode{p\_max} for the second case study. 
+\Rcode{path\_var\_ref} was quantitative, equal to the reference pathway variance $\pbias$ (eq. \ref{eq:bias-var-pathway}). 
+The responses were either AUROC, AUPRC, or both mixed, the latter denoted by \Rcode{Performance}.
+
+\section*{Materials}
+
+The evaluation of the diffusion scores was performed on three datasets of different nature, as described in Table~\ref{tab:datasets}: (1) synthetic signals on a yeast interactome, (2) pathway-based synthetic signals on a human network and (3) real signals on another human network.
+
+\begin{table*}[th]
+\centering
+\rowcolors{2}{gray!6}{white}
+\caption{
+Case studies for characterising biases and benchmarking diffusion scores.
+Interactions in explanatory models are denoted by a colon.
+}
+\label{tab:datasets}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{cllllll}
+\hiderowcolors
+\toprule
+Case & Network & Positive nodes & Signal & Bias type & Purpose & Explanatory model for hypothesis testing \\
+\midrule
+\showrowcolors
+(1) & Yeast & Synthetic & Synthetic, bias-based & Mean value & Proof of concept & $\mathrm{Performance} \sim \mathrm{method} + \mathrm{method:biased}  + \mathrm{metric}$
+ \\
+(2) & HPRD & KEGG pathways & Pathway sub-sampling & Mean value & Background influence in bias & $\mathrm{AUPRC} \sim \mathrm{method} + \mathrm{method:strat} + \mathrm{array} + k + r + p_{max}$\\
+(3) & BioGRID & KEGG pathways & Prospective pathway prediction & Variance & Bias in a common scenario & $\mathrm{AUROC} \sim \mathrm{method} + \mathrm{method:path\_var\_ref}$ \\
+\bottomrule
+\end{tabular}
+}
+\rowcolors{2}{white}{white}
+\end{table*}
+
+\subsection*{Networks}
+
+\subsubsection*{Yeast network}
+
+A small yeast network was used to demonstrate the casuistic of diffusion scores properties. 
+Medium and high confidence interactions from several sources were provided by the original study \citep{yeast_network}, as found in the igraphdata R package \citep{igraphdata}.
+It contains 2,617 proteins and 11,855 unweighted edges, but we worked only with its largest connected component (2,375 proteins, 11,693 edges).
+
+\subsubsection*{HPRD network}
+
+The diffuse large B-cell lymphoma study, available in the R package DLBCL \citep{dlbcl_package}, contains a differential expression dataset accompanied by a human interactome network extracted from the Human Protein Reference Database, HPRD \citep{hprd}. 
+The original network encompasses 9,385 proteins with 36,504 interactions, whose largest connected component (8,989 nodes, 34,325 interactions) was extracted to compute the diffusion scores. 
+
+We derived two gene backgrounds based on expression arrays. 
+The first background (Lym) was taken from the expression data from 2,557 genes (2,482 in the network) in the lymphoma study \citep{lym_array}. 
+The second background (ALL) was based on the acute lymphocytic leukemia array \citep{all_array}, available in the ALL R package \citep{all_package}, encompassing 6,133 genes (5,921 in the network). 
+
+\subsubsection*{BioGRID network}
+
+The Biological General Repository for Interaction Datasets (BioGRID) \citep{biogrid2017} is a public database with curated genetic and protein interaction from Homo sapiens and other organisms. 
+BioGRID was retrieved in January 2017, but only keeping interactions dating from 2010 or older. 
+The interactions were weighted according to \citep{pathways_confidence_dsd}, under the assumptions that more publications about an interaction boost its confidence and that low-throughput technologies are more reliable that high-throughput ones. 
+The network encompassed 11,394 nodes and 67,573 edges and was connected.
+
+\subsection*{Datasets}
+
+\subsubsection*{Synthetic bias-based dataset}
+
+100 biased and 100 unbiased instances of positive, negative and unlabelled nodes were generated in dataset (1) from table~\ref{tab:datasets}, by sampling positive nodes with probabilities proportional to biased and unbiased scores. 
+By construction, the frequencies of the positives drawn for biased signals were positively correlated with the reference expected value, whereas those of the unbiased signals were uncorrelated with it.
+
+Nodes were partitioned into three equally sized pools, from which positive nodes were drawn: (a) labelled nodes that were fed to the diffusion methods, (b) target nodes, the ones to be ranked and whose ground truth was known, and (c) filler nodes that were neither target nor labelled. 
+
+For each instance, a fixed fraction of labelled nodes $x_e$ were uniformly sampled as positives, the rest of labelled nodes were deemed negatives and the target and filler nodes were left unlabelled.
+This input served two purposes: generate the ground truth in target nodes, and be the input for all the diffusion scores.
+
+To generate the ground truth in target nodes of biased signals, the \method{raw} diffusion scores were computed from the input above. 
+A fixed fraction of target nodes $x_s$ was sampled with probabilities proportional to their raw scores, i.e. $p(i) \propto f_{raw}(i)$, to become positives. 
+The remaining target nodes would remain negatives, completing the ground truth. 
+The regularised unnormalised Laplacian kernel is endorsed by physical models that ensure $f_{raw}(i) > 0$ provided that inputs have one or more positives and the graph is connected.
+Analogously, unbiased signals were generated by sampling a fraction of target nodes $x_s$, but with probabilities roughly proportional to the unbiased diffusion scores \method{mc}: $ p(i) \propto f_{mc}(i) + \frac{1}{N + 1}$. 
+By definition, the frequency of appearance of the target nodes was independent of the bias, and the small offset ensured $ p(i) > 0 $.
+
+In both cases, after sampling the ground truth, the same input was used again for all the diffusion scores, in order to rank the target nodes and compute the corresponding AUROC and AUPRC.
+
+\subsubsection*{Pathway sub-sampling dataset}
+
+Synthetic gene expression statistics were generated, based on pathways in the Kyoto Encyclopedia of Genes and Genomes (KEGG) \citep{kegg2017}, and on two array-based gene backgrounds described within the HPRD network. 
+Genes outside the background were hidden (unlabelled), and genes inside were given p-values for differential expression.  
+
+Each signal derived from $k$ random KEGG pathways. 
+The pathways were assumed to be affected as a whole, but only a sampled portion of $r$ genes showed differential expression patterns. 
+The p-values of the differential expressed genes were uniformly sampled from $[0, p_{max}]$, whereas the rest of genes were uniform in $[0,1]$, following a previously study \citep{pathway_simulation_pvals}.
+
+For both expression arrays, genes with an $ \textrm{FDR}<10\% $ within their background were used as positives, the remaining background genes as negatives and the hidden nodes were deemed unlabelled. 
+Notice that, by definition, this procedure generated false positives and false negatives among the input genes. 
+
+The target genes were those belonging to the $k$ affected pathways, including those with no apparent differential expression and those among the unlabelled nodes.
+Methods were compared using the AUROC and AUPRC, computed separately on labelled, unlabelled genes, and overall, on a grid of parameters: $k \in \{1,3,5\}$, $r \in \{0.3,0.5,0.7\}$ and $p_{max} \in \{10^{-2},10^{-3},10^{-4}\}$. 
+For each combination of parameters, $N = 50$ instances were simulated.
+
+\subsubsection*{Prospective pathway dataset}
+
+The input lists consisted of the genes in $139$ KEGG pathways from 14th March, 2011. 
+The target genes were the newly added genes in the same KEGG pathways in 18th August, 2018 release.
+The 139 pathways had new genes in the latter release after mapping to the network. 
+%Some genes that used to belong to the pathway dropped, playing the role of false positives in the input data. 
+
+AUROC and AUPRC were computed on each pathway, always excluding the input positive genes. 
+The bias was examined at the pathway level, assessing whether the properties of their new genes differed from those of the rest of network genes. 
+It was defined as the median reference variance of its new genes minus the median reference variance of all the genes besides old and new pathway genes (eq. \ref{eq:bias-var-pathway}). 
+
+\end{methods}
+
+\section{Results}
+
+\subsection*{Properties of diffusion scores}
+
+Some of the diffusion scores are equivalent in certain scenarios. 
+In the absence of unlabelled nodes and using kernels based on the unnormalised graph Laplacian, $f_{raw}$, $f_{ml}$ and $f_{gm}$ lead to an identical node prioritisation. 
+More generally, the results using only two classes (and therefore two real values $y^+ > y^-$ as weights) always lead to the same ranking as $f_{raw}$. 
+An analogous result holds for the weights of the positives and the unlabelled, $y^+ > y^u$, in the absence of negative nodes. 
+
+The normalised scores $f_{mc}$ and $f_{z}$ are invariant to changes in the weights of the positive and negative examples, regardless of the presence of unlabelled nodes and the graph kernel.
+This property simplifies the diffusion setup and leads to weight-independent results. 
+Along with eqs. \ref{eq:expected-value} and \ref{eq:covariance}, this holds even if the matrix $K$ in eq. \ref{eq:f-raw} is not a kernel, like the random walk similarity matrices in \citep{cowen2017network}.
+
+We also provide the closed form of the null expected value and covariance matrix of the \method{raw} scores, governed by the identifiers of the $n_l$ labelled nodes (out of $n$). 
+If $\mathcal{K}$ contains only their corresponding columns from $K$, and $\mathcal{Y}$ is the input vector $y_{raw}$ restricted to them, then:
+
+\begin{equation}\label{eq:expected-value}
+    \mathds{E}(X_f) = \mu_{\mathcal{Y}} \mathcal{K} \mathbb{1}_{n_l}
+\end{equation}
+
+\begin{equation}\label{eq:covariance}
+    \Sigma(X_f) = \sigma_{\mathcal{Y}}^2 \mathcal{K} M_{n_l} \mathcal{K}^T
+\end{equation}
+
+$\mu_{\mathcal{Y}} = \frac{1}{n_l}\sum_{i = 1}^{n_l}\mathcal{Y}_i$ and $\sigma_{\mathcal{Y}}^2 = \frac{1}{n_l - 1}\sum_{i = 1}^{n_l} (\mathcal{Y}_i - \mu_{\mathcal{Y}})^2$ are the mean and variance of the labels. 
+$M_k = I_k - \frac{1}{k}\mathbb{1}_k\mathbb{1}_k^T$, being $I_k$ the $k \times k$ identity matrix and $\mathbb{1}_k$ the column vector with $k$ ones.
+
+If a graph kernel based on the unnormalised Laplacian is used, the covariance of the null distribution (eq. \ref{eq:covariance}) is closely related to the spectral properties of the labelled nodes. 
+In particular, in the absence of unlabelled nodes, the leading eigenvector of the null covariance is, up to a sign change, the Fiedler-vector, commonly used for graph clustering \citep{smola}. 
+The statistical normalisation is therefore endowed with a topological basis.
+This sheds light on prior empirical observations that, even when the bias can relate to the node degree, there must be further topological factors involved \citep{hill2019benchmarking}.
+
+Because $\mu_{\mathcal{Y}}$ and $\sigma_{\mathcal{Y}}^2$ are multiplicative constants and inherent to the labels, the topology-related mean value and variance references of the $i$-th node are defined as follows.
+We assume $n_l \geq 2$ because if $n_l \in \{0,1\}$ there is nothing to permute.
+
+\begin{equation}\label{eq:bias-e}
+    \ebias(i) := [\mathcal{K} \mathbb{1}_{n_l}]_{i1} = \sum_{j = 1}^{n_l} \mathcal{K}_{ij}
+\end{equation}
+
+\begin{equation}\label{eq:bias-var}
+    \vbias(i) := \log_{10} \left(\left[\mathcal{K} M_{n_l} \mathcal{K}^T\right]_{ii}\right) = \log_{10} \left( \sum_{j = 1}^{n_l} \left(\mathcal{K}_{ij} - \frac{\ebias(i)}{n_l} \right)^2 \right)
+\end{equation}
+
+Eq. \ref{eq:expected-value} implies that there are two scenarios free of the expected value bias: $\mu_{\mathcal{Y}} = 0$ (centered input), or $n_l = n$ and a kernel $K$ based on the unnormalised Laplacian, rendering $\ebias$ constant (see Supplement 1).
+The $i$-th null variance (eq. \ref{eq:covariance}) can be exactly zero, either because $\sigma_{\mathcal{Y}}^2 = 0$ (constant input), or because the topology forces $[\mathcal{K} M_{n_l} \mathcal{K}^T]_{ii} = 0$.
+In practice, the latter is expected to happen in small connected components without any labelled nodes.
+Both cases render the $i$-th score constant, therefore lacking interest, and leave $f_z$ undefined.
+
+In the retrospective dataset, the reference of a given pathway $P$, conceived to summarise its properties into a single number, was defined by subtracting the median reference of its new genes, $\textrm{new}(P)$ to that of the genes that never belonged to it, $\textrm{others}(P)$:
+
+\begin{equation}\label{eq:bias-var-pathway}
+    \pbias(P) := \underset{i \in \textrm{new}(P)}{\textrm{median}}\{\vbias(i)\} - \underset{i \in \textrm{other}(P)}{\textrm{median}}\{\vbias(i)\}
+\end{equation}
+
+The mathematical proofs of the properties and illustrative examples can be found in Supplement 1. 
+
+\subsection*{Synthetic signals in yeast}
+
+\subsubsection*{Bias in diffusion scores}
+
+Supported by eq. \ref{eq:expected-value}, the presence of unlabelled nodes originated different expected values among the nodes. 
+We hypothesised that $f_{raw}$ would be biased to favour nodes with high $\ebias$, whereas $f_{mc}$ and $f_z$ would prioritise in a more unbiased manner. 
+Figure \ref{fig:yeast}A confirms both trends. 
+The data imbalance (negatives outnumbered positives in the input) had the opposite biasing effect on $f_{ml}$, favouring nodes with low $\ebias$.
+
+\begin{figure*}[!tpb]%figure1
+\centerline{
+\includegraphics[width=\linewidth]{fig_main/main_bias_yeast.pdf}
+}
+\caption{Analysis of biased and unbiased synthetic signals on the yeast network. 
+Nodes showed a mean value-related bias, see Supplement 2.
+\textbf{(A)} Effects of the mean value bias in on the average node ranking, under biased and unbiased signals. 
+Lines correspond to Generalised Additive Models with $y \sim s(x, bs = "cs")$ and 0.95 confidence intervals.
+\method{raw} and \method{ml} tended to find positives with high and low $\ebias$,  respectively. 
+\method{z} found positives in a more uniform manner.
+\textbf{(B)} Performance in terms of AUROC and AUPRC.
+\method{raw} was better suited for biased signals, for which the \method{pagerank} baseline also outperformed a random predictor. 
+Conversely, \method{z} worked best on unbiased signals. 
+}
+\label{fig:yeast}
+\end{figure*}
+
+\subsubsection*{Performance}
+
+In biased signals, target nodes with higher $\ebias$ were sampled as positives more often (see Supplement 2), which (i) benefited the unnormalised scores \method{raw} over \method{z}, and (ii) endowed the \method{pagerank} baseline with predictive power.
+Unbiased signals led to a uniform density of positives across $\ebias$, which (iii) was better handled by \method{z} than by \method{raw} (figure \ref{fig:yeast}B). 
+Claims (i), (ii) and (iii) were statistically significant for AUROC and AUPRC (Tukey's method, $\textrm{FDR}<10^{-10}$ in all cases, see Supplement 2).
+Also, $f_{ber_p}$ was a good compromise between \method{raw} and \method{z}.
+
+Based on these results, we suggest a systematic criterion to choose whether to normalise in the general case, by assessing (1) the presence of the expected value-related bias by checking if $\ebias$ is constant among the nodes to be prioritised, and (2) the expected or hypothetical dependence between $\ebias$ and the labels to be predicted. 
+In this proof of concept, differences in $\ebias$ bias were present and normalisation was discouraged when $\ebias$ was aligned with the positives.
+If $\ebias$ is constant, $\vbias$ should be examined instead, see the retrospective pathway dataset. 
+
+\subsection*{Simulated differential expression}
+
+\subsubsection*{Bias in diffusion scores}
+
+Analogously to the yeast dataset, the presence of unlabelled nodes led to differences in $\ebias$ among nodes, see figure \ref{fig:array}A. 
+We hypothesised that the main source of bias would arise from such heterogeneity, i.e. that unnormalised scores would be prone to find positives among highest expected values. 
+In both arrays, the nodes belonging to one or more pathways had, compared with nodes outside, (i) larger $\ebias$ within the unlabelled genes, but (ii) lower $\ebias$ within the labelled nodes. 
+Overall, (iii) labelled genes showed larger $\ebias$ than unlabelled genes.
+Figure \ref{fig:array}A portrays the claims (i), (ii) and (iii) in both arrays -- the six statements were significant with $p<10^{-16}$, two-sided Wilcoxon test (see Supplement 3). 
+
+\subsubsection*{Performance}
+
+The performance, as predicted by the explanatory models, was influenced by the background used to compute the metrics, especially for AUPRC. 
+Taking as reference $f_{raw}$ and $f_z$, \method{raw} performed best in the unlabelled background and overall whereas \method{z} was preferable in the labelled background (figure \ref{fig:array}B). 
+The three claims were significant in both arrays (Tukey's method, $p<10^{-10}$, see Supplement 3).
+
+\begin{figure*}[!tpb]%figure2
+\centerline{
+\includegraphics[width=\linewidth]{fig_main/main_bias_auprc.pdf}
+}
+\caption{Performance in the DLBCL dataset. 
+\textbf{(A)} Expected value-related bias. 
+Within the labelled genes of both arrays, those in pathways had lower $\ebias$ that those outside. 
+Within the unlabelled genes, this tendency was inverted. 
+Overall, labelled genes had higher $\ebias$ than unlabelled genes. 
+\textbf{(B)} Predicted AUPRC (0.95 confidence interval) using the explanatory model in Table \ref{tab:datasets} and Supplement 3. 
+Besides diffusion scores, three baselines were included: \method{original} (ranking by the p-values), \method{pagerank} and \method{random}. 
+In both arrays (\textit{ALL} and \textit{Lym}), \method{raw} outperformed \method{z} in unlabelled nodes and overall, while \method{z} was preferable in the labelled genes. 
+}\label{fig:array}
+\end{figure*}
+
+Differences in performance were consistent with the expected value-related bias: potential positives suffered from lower $\ebias$ in the labelled genes and benefited from greater $\ebias$ in the unlabelled part. 
+In views of this, the natural choices were \method{z} and \method{raw}, respectively. 
+
+To understand why \method{raw} outperformed \method{z} in overall performance, note how by hypothesis the top candidates from \method{raw} should come from the labelled genes due to their high $\ebias$ against the unlabelled genes, whilst \method{z} should equalise predictions from both backgrounds. 
+Predictions from the labelled part were more reliable owing to the presence of prior data on the genes (figure \ref{fig:array}B). 
+\method{z} equalised both backgrounds, shuffling reliable and unreliable predictions, and undermined overall performance. 
+
+Finally, an indirect assessment of the bias (PageRank centrality) fell short to explain performance differences in (i) and suggested that biased scores were preferrable in the three cases, see Supplement 3.
+This highlights the importance of using a precise quantification of the bias.
+
+\subsection*{Prospective pathway prediction}
+
+\subsubsection*{Bias in diffusion scores}
+
+Here, $\ebias$ was constant among all the nodes, as a consequence of using the unnormalised Laplacian without unlabelled nodes (see Supplement 1). 
+Differences still existed in terms of $\vbias$ (figure \ref{fig:retrodata}A), implying that the normalisation would make a difference. 
+
+\begin{figure*}[!tpb]%figure3
+\centerline{
+\includegraphics[width=\linewidth]{fig_main/main_retrodata.pdf}
+}
+\caption{Analysis of the prospective dataset.
+\textbf{(A)} Pathway-wise comparison of new genes against the remaining genes outside the pathway, in terms of $\vbias$. 
+Several pathways showed significant differences in both directions (two-sided Wilcoxon test). 
+The $x$ axis was jittered for clarity.
+\textbf{(B)} Ranking of the positives using \method{raw} and \method{z}. 
+Each data point is the relative ranking of a positive gene in one of the pathways, i.e. before computing pathway-level metrics. 
+Lines correspond to a quasi-logistic fit with a 0.95 confidence interval.
+\method{raw} scores were more sensitive at low standard deviations, whereas \method{z} stood more uniform.
+\textbf{(C)} Coefficients of the model $\mathrm{AUROC} \sim \mathrm{method} + \mathrm{method:path\_var\_ref}$ with a 0.95 confidence interval, where the interaction term involved the variance bias. 
+The main effect of \method{raw} was not depicted because it was the reference level of \texttt{method}. 
+\textbf{(D)} Predicted AUROC across all the pathways, as a function of the bias. 
+\method{z} was less sensitive to the bias, due to its interaction term in \textbf{(C)} being closer to 0.
+Lines correspond to a quasi-logistic fit with a 0.95 confidence interval.
+}\label{fig:retrodata}
+\end{figure*}
+
+However, the interpretation of the normalisation impact was not as straightforward as for the expected value bias. 
+With the paradigm of the z-scores \method{z}, deviations from the expected value exacerbate under small variances and shrink under large variances. 
+Notice how this does not imply the natural hypothesis that nodes with larger variances (resp. smaller) must drop (resp. rise) in the ranking, because ranking modifications take place around the mean. 
+Figure \ref{fig:retrodata}B reflects how \method{z} actually recovered more high-variance positive nodes than \method{raw}.
+
+Similarly to prior observations from figure \ref{fig:yeast}A, the normalised scores tended to find the positives in a less biased manner. 
+Positive nodes with a high variance were rarely found by \method{raw}, whereas \method{z} distributed them more evenly along the ranking (figure \ref{fig:retrodata}B).
+This improvement came at the cost of missing positives with lower variances. 
+
+\subsubsection*{Performance}
+
+The properties of the diffusion scores helped simplify this case study, as $f_{ml}$, $f_{gm}$ and $f_{ber\_s}$ were left out for being redundant with $f_{raw}$.
+$f_{ml}$ and $f_{gm}$ for using the unnormalised Laplacian without unlabelled nodes, and $f_{ber_s}$ because the genes to be prioritised were always labelled as negative in the input (see corollary 1 and proposition 3 in Supplement 1).
+% The performance estimates differed by an order of magnitude from those from the cross-validation-alike scheme in the DLBCL dataset. 
+% This opens the speculative question of whether cross-validation with an up-to-date network can lead to a certain degree of circularity. 
+
+The prospective prediction of pathway genes was a challenging task, given the low predicted AUPRCs for all the methods (see Supplement 4). 
+On the other hand, AUROC conveyed a richer view of the differences between methods. 
+The explanatory model (figures \ref{fig:retrodata}C, \ref{fig:retrodata}D) showed that unnormalised scores were more affected by the presence of bias, reflected in the larger magnitude of their interaction terms ($-1.387$ for \method{raw} against $-0.484$ for \method{z}, $p<10^{-4}$, Tukey's method). 
+Overall, the casuistic among the bias of new pathway genes favoured \method{z} over \method{raw} ($ \textrm{FDR}=5.39\cdot 10^{-9}$, two-sided paired Wilcoxon test). 
+This conclusion did not apply to early retrieval, as it could not be proven for AUPRC ($\textrm{FDR} = 0.701$).
+
+The negative sign of the interaction terms was also insightful: all the proper methods encountered more difficulties in finding loosely connected genes.
+This was expected, since there is less network data involving such genes, translating into unreliable predictions.
+
+\section*{Conclusion}
+
+In this study, we ratified that diffusion scores are biased due to the graph topology. 
+We introduced two direct quantifications of the bias, in terms of the expected value and variance of the null distribution of the diffusion scores under input permutation.
+We analysed the benefits and pitfalls of using unbiased, statistically normalised scores and discussed several choices of the label weights when defining the diffusion process. 
+
+We proved equivalences between scores under certain conditions, helping simplify the setup of the diffusion, and discovered that normalised alternatives are invariant under label weights changes. 
+We found an explicit link between principal directions of the null covariance and the spectral features of the network.
+
+We applied the diffusion-based prioritisation on three scenarios: two with a mean value-related bias and one with a variance-related bias. 
+Class imbalance and node topology had an impact in unnormalised scores, whereas
+normalised scores were more robust to both phenomena given their weight-independent definition. 
+The parametric normalisation requires no permutations compared to Monte Carlo trials and performed equally or better, providing a convenient way to normalise.
+While mean value bias was straightforward to characterise, variance bias was less intuitive albeit of noticeable impact. 
+In general terms, the statistical normalisation is advised if the positives are not aligned with the bias, and discouraged otherwise. 
+The statistical background, i.e. which nodes are permuted, is a key piece that should be clearly stated in every application.
+Bias assessment should be carried through its direct quantification instead of indirect indicators, which can be misleading.
+ 
+We conclude that the statistical normalisation can be beneficial or detrimental, and the decision should follow from the dependence between the node bias and the hypothetical or desired properties of the new positives. 
+Topology-related bias can manifest in different ways (mean value- or variance-related bias) and each instance should be properly characterised.
+
+
+\section*{Acknowledgements}
+
+SP thanks Guillem Belda-Ferr\'in for reviewing the mathematical proofs.
+SP thanks Imanol Morata Mart\'inez and Camellia Sarkar for fruitful discussions and useful suggestions. 
+
+\textit{Conflict of Interest:} 
+none declared
+
+\section*{Funding}
+This work was supported by the Spanish Ministry of Economy and Competitiveness (MINECO) [TEC2014-60337-R and DPI2017-89827-R to A.P.] and the National Institutes of Health (NIH) [R01GM104400 to W.T.]. 
+AP and SP thank CIBERDEM and CIBER-BBN for funding, both initiatives of the Spanish ISCIII. 
+SP thanks the AGAUR FI-scholarship programme.  
+
+\bibliographystyle{natbib}
+%\bibliographystyle{achemnat}
+%\bibliographystyle{plainnat}
+%\bibliographystyle{abbrv}
+%\bibliographystyle{bioinformatics}
+%
+%\bibliographystyle{plain}
+%
+\bibliography{document}
+
+\end{document}
