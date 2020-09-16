@@ -24,7 +24,7 @@ vars <- load(file_dataset)
 parts <- load(file_partitions)
 stopifnot(all(c("partition.genes", "partition.paths") %in% parts))
 
-files_scores <- list.files(path = dir_scores)
+files_scores <- list.files(path = dir_scores, pattern = "Threshold.*") 
 ```
 
 # Preprocess pathway partitions
