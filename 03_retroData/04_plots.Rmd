@@ -22,7 +22,7 @@ source("../helper_funs.R")
 
 # the training data is mat.old
 # validation is mat.new
-files_stats <- list.files(path = dir_stats, pattern = "*auc*")
+files_stats <- list.files(path = dir_stats, pattern = "*auc_Threshold*")
 ```
 
 # Compute the AUCs stratified by genes
@@ -116,7 +116,7 @@ plyr::l_ply(
 list_df <- load("01_data/props_dataframes.RData")
 
 # load rankings
-list_rk <- load("03_statistics/ranking_all.RData")
+list_rk <- load("03_statistics/ranking_Threshold_0.0.RData")
 
 g <- ggplot(df_bias_path, aes(x = n_new)) + 
   geom_bar() + 
@@ -229,9 +229,86 @@ ggsave(g, file = paste0(dir_plots, "/rank_bypathway.png"),
 
 # Main models
 
+## Modelling different thresholds
+
+```{r}
+df_all_auc <- plyr::ldply(
+  setNames(files_stats, files_stats), function(x) {
+    load(paste0(dir_stats, "/", x))
+    df_auc
+  }, .id = "Threshold"
+)
+
+df_all_mod <- filter(
+  df_all_auc,
+  partition %in% c("d1g") &
+    size_novelgenes >= 1 &
+    !(method %in% c("ml", "gm", "ber_s"))) %>%
+  mutate(Biased = as.factor(Biased), 
+         Biased_ng5 = size_novelgenes >= 5, 
+         Bias_lognew = log(size_novelgenes)) %>% 
+  join(select(df_bias_path, pathway, median_new, median_diff)) %>% 
+  mutate(median_rk = scale(median_new))
+df_all_mod$normalised <- ifelse(
+  df_all_mod$method %in% c("ber_p", "mc", "z"), "true", "false") %>%
+  as.factor
+```
+
+
+```{r}
+# Models using all the methods
+# the bias is just a scaled version of the log of the std dev
+mod_all_auroc <- glm(
+  auroc ~ method + method:median_diff + Threshold,
+  data = df_all_mod,
+  family = quasibinomial(link = "logit"))
+
+summary(mod_all_auroc)
+# anova(mod_logistic)
+
+# compute contrasts between methods
+glht_all_auroc <- multcomp::glht(
+  mod_all_auroc)
+emmeans::emmeans(
+  mod_all_auroc, specs = "method", 
+  type = "response", nesting = NULL)
+
+  # linfct = multcomp::mcp(method = "Tukey"))
+confint_all_auroc <- summary(glht_all_auroc)
+confint_all_auroc
+```
+
+Comparing the magnitude of a threshold change and the statistical normalisation
+
+```{r}
+mod_normeffect_auroc <- glm(
+  auroc ~ method + median_diff + Threshold,
+  data = subset(df_all_mod, method %in% c("raw", "z")),
+  family = quasibinomial(link = "logit"))
+
+summary(mod_normeffect_auroc)
+
+# confidence intervals
+confint(mod_normeffect_auroc)
+
+# compute contrasts between methods
+glht_normeffect_auroc <- multcomp::glht(
+  mod_normeffect_auroc)
+emmeans::emmeans(
+  mod_normeffect_auroc, specs = c("Threshold", "method"), 
+  type = "response", nesting = NULL)
+
+  # linfct = multcomp::mcp(method = "Tukey"))
+confint_normeffect_auroc <- summary(glht_normeffect_auroc)
+confint_normeffect_auroc
+```
+
+
+## Using no threshold (default)
+
 ```{r}
 # Load all the metrics
-load("03_statistics/auc_all.RData")
+load("03_statistics/auc_Threshold_0.0.RData")
 
 df_mod <- filter(
   df_auc,
