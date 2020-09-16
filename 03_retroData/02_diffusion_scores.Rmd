@@ -31,19 +31,22 @@ set.seed(1)
 # pagerank
 pr <- igraph::page.rank(g.network)$vector
 
-# sweep bkgds: is every gene labelled? (positive inside pathway, 
-# negative outside it) or is the union of all pathways considered 
-# as the labelled genes, and the rest are unlabelled?
-id_bkgd <- list(
-  pathways = which(rowSums(mat.old) > 0),
-  all = setNames(1:nrow(mat.old), rownames(mat.old)))
+# use all genes as background (so that expected values are constant)
+
+# try two versions of the network: mid-high and high confidence
+list_kern <- list.files("~/big/devel/big/diffusion/", pattern = "biogrid.+rds") 
+list_kern <- setNames(paste0("~/big/devel/big/diffusion/", list_kern), 
+                      gsub("(biogrid_)(.*)(\\.rds)", "\\2", list_kern))
 
 tic("Scoring algorithms")
 plyr::l_ply(
-  list_bkgd, 
-  function(bkgd) {
+  names(list_kern), 
+  function(name_kern) {
+    # kernel for a particular filtering setting
+    K <- readRDS(list_kern[[name_kern]])
+    
     # pick the labelled genes as a function of the background
-    input <- mat.old[id_bkgd[[bkgd]], ]*1
+    input <- mat.old*1
     # compute the scores
     list_diff <- lapply(
       list_methods, 
@@ -68,7 +71,7 @@ plyr::l_ply(
     dimnames(list_diff$random) <- dimnames(list_diff$pagerank) 
     
     # save with maximum compression
-    save(list_diff, file = paste0(dir_scores, "/", bkgd, ".RData"), 
+    save(list_diff, file = paste0(dir_scores, "/", name_kern, ".RData"), 
          compress = "xz")
   }
 )
