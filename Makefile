@@ -3,7 +3,7 @@ RSCRIPT := /opt/R/3.5.3/bin/Rscript
 LATEX_CMD = pdflatex -synctex=1 -interaction=nonstopmode --shell-escape
 BIB_CMD = bibtex
 
-all:: props demos filters s1 s2 s3 main 
+all:: props demos filters s1 s2 s3 main diffr1
 zip:: 
 	cp 11_supplement/supplement-math-properties.pdf Supplement_1.pdf;
 	cp 01_synthetic/10_synth_yeast.pdf Supplement_2.pdf;
@@ -11,8 +11,9 @@ zip::
 	cp 03_retroData/10_supplement.pdf Supplement_4.pdf;
 	cp 00_networkCuration/10_supplement.pdf Supplement_5.pdf;
 	cp 10_main/main.pdf main.pdf;
+	cp 10_main/main_diff_R1.pdf main_diff_R1.pdf;
 	git rev-parse --verify HEAD > git_hash.txt;
-	zip -9 -m all.zip Supplement_*.pdf main.pdf git_hash.txt;
+	zip -9 -m all.zip Supplement_*.pdf main*.pdf git_hash.txt;
 
 # open with reader
 omain: 
@@ -25,6 +26,12 @@ odemos:
 main:: 10_main/main.pdf
 demos:: 11_supplement/supplement-math-properties.pdf
 filters:: 00_networkCuration/10_supplement.pdf
+
+# revision
+diffr1: 10_main/main_diff_R1.pdf
+
+10_main/main_diff_R1.tex: 10_main/main_R0.tex 10_main/main.tex
+	latexdiff 10_main/main_R0.tex 10_main/main.tex > 10_main/main_diff_R1.tex
 
 # rmd
 s1:: 01_synthetic/10_synth_yeast.pdf 
