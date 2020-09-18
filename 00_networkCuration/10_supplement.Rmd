@@ -157,7 +157,7 @@ list_yeast <- plyr::llply(
 df_stats_yeast <- plyr::ldply(list_yeast, describe_net, .id = "confidence")
 ```
 
-While the default medium and high confidence setting retains one connected component of `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[1])$largestcc` nodes from which `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[1])$leaves` are leaf nodes, the stringent filtering only leaves a largest component of `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[2])$largestcc` nodes and produces `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[2])$isolated` isolated nodes.
+While the default medium and high confidence setting retained one connected component of `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[1])$largestcc` nodes from which `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[1])$leaves` were leaf nodes, the stringent filtering only left a largest component of `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[2])$largestcc` nodes and produced `r subset(df_stats_yeast, confidence == names(ref_conf_yeast)[2])$isolated` isolated nodes.
 
 ```{r}
 df_stats_yeast[c("confidence", "vc", "ec", "ccs", "largestcc", "isolated", "leaves")] #%>% t %>% as.data.frame
@@ -184,7 +184,7 @@ g_yeast$Classes[c("Category", "Description")]
 
 ## Kernels and statistics
 
-After generating one graph kernels per filtering setting, the statistical moments were computed for each statistical background.
+After generating one graph kernel per filtering setting, the statistical moments were computed for each statistical background.
 
 ```{r}
 # check for existing kernels
@@ -235,7 +235,7 @@ ggplot(subset(df_all_yeast), aes(x = pagerank, y = ebias, colour = bkgd)) +
 ```
 
 
-```{r yeast-ebias-scatter, fig.pos = 'h', fig.cap='Scatterplot of expected value bias of medium versus high filtering settings, in the yeast network.'}
+```{r yeast-ebias-scatter, fig.pos = 'h', fig.cap='Scatterplot of expected value bias of medium versus high filtering settings, in the yeast network. Linear fit for reference.'}
 df_all_yeast %>%
   dplyr::select(id, ebias, threshold, Location, bkgd) %>%
   tidyr::spread(key = threshold, value = ebias) %>%
@@ -247,6 +247,8 @@ df_all_yeast %>%
   scale_colour_distiller(palette = "Spectral") +
   # geom_smooth(method = "glm", method.args = list(family = binomial)) +
   facet_wrap(~Location) +
+  xlab(expression(paste(b[mu]^kappa, plain(" (medium confidence threshold)")))) +
+  ylab(expression(paste(b[mu]^kappa, plain(" (high confidence threshold)")))) +
   gg_def
 ```
 
@@ -279,8 +281,8 @@ Specifically, when comparing the medium and the high confidence in the yeast int
 
 ```{r}
 with(subset(df_wide_yeast, inbkgd), 
-     wilcox.test(x = Threshold_medium, 
-                 y = Threshold_high, 
+     wilcox.test(x = Threshold_high, 
+                 y = Threshold_medium, 
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
@@ -291,8 +293,8 @@ And a significant decrease in the nodes outside the background:
 
 ```{r}
 with(subset(df_wide_yeast, !inbkgd), 
-     wilcox.test(x = Threshold_medium, 
-                 y = Threshold_high, 
+     wilcox.test(x = Threshold_high, 
+                 y = Threshold_medium, 
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
@@ -392,7 +394,7 @@ df_stats_biogrid <- plyr::ldply(list_biogrid, describe_net, .id = "confidence")
 
 Most notably, medium-high and high confidence dropped the size of the largest connected component from $`r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[1])$largestcc`$ to `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[2])$largestcc` and `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[3])$largestcc`. 
 Due to this dramatic change, the largest network was the default option for the main analysis.
-The most stringent filtering also creates `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[3])$isolated` isolated nodes, i.e. more than half of them.
+The most stringent filtering also created `r subset(df_stats_biogrid, confidence == names(ref_weights_biogrid)[3])$isolated` isolated nodes, i.e. more than half of them.
 
 ```{r}
 df_stats_biogrid[c("confidence", "vc", "ec", "ccs", "largestcc", "isolated", "leaves")] #%>% t %>% as.data.frame
@@ -408,7 +410,7 @@ Again, to create differences in expected values, the union of the genes in the K
 
 ## Kernels and statistics
 
-After generating both graph kernels, the statistical moments were computed for each statistical background.
+After generating the three graph kernels, the statistical moments were computed for the aforementioned statistical background.
 
 ```{r}
 list_rds_biogrid <- paste0(dir_kernels, "/biogrid_", names(list_biogrid), ".rds")
@@ -442,7 +444,7 @@ subset(df_all_biogrid) %>%
   gg_def
 ```
 
-```{r biogrid-ebias-scatter, fig.pos = 'h', fig.cap='Scatterplot of expected value bias of medium versus high filtering settings in the BioGRID network.'}
+```{r biogrid-ebias-scatter, fig.pos = 'h', fig.cap='Scatterplot of expected value bias of medium versus high filtering settings in the BioGRID network. Linear fit for reference.'}
 df_all_biogrid %>%
   dplyr::select(id, ebias, threshold, Location) %>%
   tidyr::spread(key = threshold, value = ebias) %>%
@@ -455,6 +457,8 @@ df_all_biogrid %>%
   # geom_smooth(method = "glm", method.args = list(family = binomial)) +
   facet_wrap(~Location) +
   coord_fixed() +
+  xlab(expression(paste(b[mu]^kappa, plain(" (threshold = 0.0)")))) +
+  ylab(expression(paste(b[mu]^kappa, plain(" (threshold = 0.3)")))) +
   gg_def
 ```
 
@@ -483,8 +487,8 @@ Paired Wilcoxon tests between medium (no threshold) and medium-high (threshold o
 
 ```{r}
 with(subset(df_wide_biogrid, inbkgd), 
-     wilcox.test(x = Threshold_0.0, 
-                 y = Threshold_0.3, 
+     wilcox.test(x = Threshold_0.3, 
+                 y = Threshold_0.0, 
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
@@ -495,8 +499,8 @@ And a significant decrease in the nodes outside the background:
 
 ```{r}
 with(subset(df_wide_biogrid, !inbkgd), 
-     wilcox.test(x = Threshold_0.0, 
-                 y = Threshold_0.3, 
+     wilcox.test(x = Threshold_0.3, 
+                 y = Threshold_0.0, 
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
@@ -508,8 +512,8 @@ For the nodes inside the background:
 
 ```{r}
 with(subset(df_wide_biogrid, inbkgd), 
-     wilcox.test(x = Threshold_0.3, 
-                 y = Threshold_0.9, 
+     wilcox.test(x = Threshold_0.9, 
+                 y = Threshold_0.3, 
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
@@ -520,8 +524,8 @@ And the nodes outside it:
 
 ```{r}
 with(subset(df_wide_biogrid, !inbkgd), 
-     wilcox.test(x = Threshold_0.3, 
-                 y = Threshold_0.9, 
+     wilcox.test(x = Threshold_0.9, 
+                 y = Threshold_0.3, 
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
@@ -531,8 +535,7 @@ with(subset(df_wide_biogrid, !inbkgd),
 ### Variance
 
 Like for the yeast network, the reference variances $b_{\sigma^2}^{\mathcal{K}}(i)$ tended to the extremes as well (figure \@ref(fig:biogrid-vbias-threshold)).
-For clarity, the nodes with 0 variance (i.e. with constant scores) were imputed the minimum variance, otherwise $b_{\sigma^2}^{\mathcal{K}}(i)$ would be undefined.
-The undefined values were replaced with the minimum value `r min(df_all_biogrid$vbias %>% subset(is.finite(.))) %>% signif(3)`.
+For clarity, the nodes with 0 variance (i.e. with constant scores) were replaced with the minimum variance (equalling `r min(df_all_biogrid$vbias %>% subset(is.finite(.))) %>% signif(3)`), otherwise $b_{\sigma^2}^{\mathcal{K}}(i)$ would be undefined.
 
 ```{r biogrid-vbias-threshold, fig.width=5, fig.height=5, fig.pos = 'h', fig.cap='Reference variance, by filtering setting, in the BioGRID network.'}
 subset(df_all_biogrid) %>%

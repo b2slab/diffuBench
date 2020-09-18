@@ -3,6 +3,11 @@
 .Rhistory
 .Rapp.history
 
+*.txt
+*.RData
+*.png
+*.pdf
+
 # Output files from R CMD check
 /*.Rcheck/
 
