@@ -284,7 +284,7 @@ with(subset(df_wide_yeast, inbkgd),
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
-                 alternative = "less"))
+                 alternative = "two.sided"))
 ```
 
 And a significant decrease in the nodes outside the background:
@@ -296,7 +296,7 @@ with(subset(df_wide_yeast, !inbkgd),
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
-                 alternative = "greater"))
+                 alternative = "two.sided"))
 ```
 
 To recapitulate, we observed:
@@ -488,7 +488,7 @@ with(subset(df_wide_biogrid, inbkgd),
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
-                 alternative = "less"))
+                 alternative = "two.sided"))
 ```
 
 And a significant decrease in the nodes outside the background:
@@ -500,7 +500,7 @@ with(subset(df_wide_biogrid, !inbkgd),
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
-                 alternative = "greater"))
+                 alternative = "two.sided"))
 ```
 
 The same conclusions were drawn for when comparing medium-high to high confidence only (threshold of 0.9).
@@ -513,7 +513,7 @@ with(subset(df_wide_biogrid, inbkgd),
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
-                 alternative = "less"))
+                 alternative = "two.sided"))
 ```
 
 And the nodes outside it:
@@ -525,7 +525,7 @@ with(subset(df_wide_biogrid, !inbkgd),
                  paired = TRUE,
                  exact = FALSE, 
                  conf.int = TRUE, 
-                 alternative = "greater"))
+                 alternative = "two.sided"))
 ```
 
 ### Variance
